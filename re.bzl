@@ -994,6 +994,49 @@ def findall(pattern, text):
 
     return matches
 
+def _MatchObject(text, regs, compiled, pos, endpos):
+    """Constructs a match object with methods.
+
+    TODO: Convert this to a struct when migrating to Bazel rules (which support structs).
+    """
+
+    def group(n = 0):
+        if n < 0 or n > compiled["group_count"]:
+            fail("IndexError: no such group")
+        start = regs[n * 2]
+        end = regs[n * 2 + 1]
+        if start == -1 or end == -1:
+            return None
+        return text[start:end]
+
+    def groups(default = None):
+        res = []
+        for i in range(1, compiled["group_count"] + 1):
+            start = regs[i * 2]
+            end = regs[i * 2 + 1]
+            if start == -1 or end == -1:
+                res.append(default)
+            else:
+                res.append(text[start:end])
+        return tuple(res)
+
+    def span(n = 0):
+        if n < 0 or n > compiled["group_count"]:
+            fail("IndexError: no such group")
+        return (regs[n * 2], regs[n * 2 + 1])
+
+    return {
+        "group": group,
+        "groups": groups,
+        "span": span,
+        "string": text,
+        "re": compiled,
+        "pos": pos,
+        "endpos": endpos,
+        "lastindex": None,  # TODO: Track last capturing group
+        "lastgroup": None,  # TODO: Track last capturing group name
+    }
+
 def sub(pattern, repl, text, count = 0):
     """Return the string obtained by replacing the leftmost non-overlapping occurrences of the pattern in text by the replacement repl.
 
@@ -1060,13 +1103,9 @@ def sub(pattern, repl, text, count = 0):
                 groups.append(None)
 
         if type(repl) == "function":
-            # Starlark functions can be called
-            # We need to pass a match object? Starlark doesn't have objects.
-            # Maybe pass the match string? Or a struct-like dict?
-            # Python passes a match object.
-            # Let's pass the match string for now, or a dict if they need groups.
-            # Simple MVP: pass match string.
-            replacement = repl(match_str)
+            # Pass a match object (dict with methods)
+            match_obj = _MatchObject(text, regs, compiled, match_start, match_end)
+            replacement = repl(match_obj)
         else:
             replacement = _expand_replacement(repl, match_str, groups, compiled["named_groups"])
 

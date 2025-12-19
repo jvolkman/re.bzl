@@ -99,13 +99,30 @@ def run_tests_api():
     expected = "bbbc"
     assert_eq(res, expected, "sub 'a+'->'b'")
 
-    # Test 2: Function replacement
-    def upper_repl(match):
-        return match.upper()
+    # Test 2: Function replacement (MatchObject)
+    def upper_repl(m):
+        return m["group"](0).upper()
 
     res = sub("a+", upper_repl, "abaac")
     expected = "AbAAc"
     assert_eq(res, expected, "sub function")
+
+    # Test 3: Callback with MatchObject details
+    def repl_details(m):
+        # Test group() and span()
+        return "[%s:%s]" % (m["group"](0), m["span"](0)[0])
+
+    res = sub("a+", repl_details, "abaac")
+    expected = "[a:0]b[aa:2]c"
+    assert_eq(res, expected, "sub callback details")
+
+    # Test 4: Callback with groups
+    def repl_groups(m):
+        return "%s-%s" % (m["group"](1), m["group"](2))
+
+    res = sub("(\\w)(\\d)", repl_groups, "a1 b2")
+    expected = "a-1 b-2"
+    assert_eq(res, expected, "sub callback groups")
 
     print("--- Testing split ---")
 
