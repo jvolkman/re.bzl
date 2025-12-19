@@ -1,6 +1,11 @@
+"""
+Tests for regex lookaround assertions.
+"""
+
 load("tests/utils.star", "run_suite")
 
 def run_tests_lookaround():
+    """Runs lookaround tests."""
     cases = [
         # 19. Lookahead
         ("a(?=b)", "ab", {0: "a"}),

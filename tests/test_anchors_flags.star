@@ -1,6 +1,11 @@
+"""
+Tests for regex anchors and flags.
+"""
+
 load("tests/utils.star", "run_suite")
 
 def run_tests_anchors_flags():
+    """Runs anchors and flags tests."""
     cases = [
         # 10. Anchors
         ("^orange$", "orange", {0: "orange"}),

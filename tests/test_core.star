@@ -1,6 +1,11 @@
+"""
+Tests for core regex functionality.
+"""
+
 load("tests/utils.star", "run_suite")
 
 def run_tests_core():
+    """Runs core tests."""
     cases = [
         # 4. Core functionality
         ("(orange)-(.*)", "orange-rules", {0: "orange-rules", 1: "orange", 2: "rules"}),

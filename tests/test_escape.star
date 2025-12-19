@@ -1,6 +1,11 @@
+"""
+Tests for escaping special characters.
+"""
+
 load("tests/utils.star", "assert_match")
 
 def run_tests_escape():
+    """Runs escape tests."""
     print("--- Verifying Escaping Support ---")
 
     # Escaped special characters

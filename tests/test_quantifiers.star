@@ -1,6 +1,11 @@
+"""
+Tests for regex quantifiers.
+"""
+
 load("tests/utils.star", "run_suite")
 
 def run_tests_quantifiers():
+    """Runs quantifier tests."""
     cases = [
         # 2. Lazy vs Greedy in Context
         ("<.*?>", "<tag>content</tag>", {0: "<tag>"}),

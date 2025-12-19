@@ -12,7 +12,6 @@ Designed for environments without 're' module, recursion, or 'while' loops.
 """
 
 # Bytecode Instructions
-# Bytecode Instructions
 OP_CHAR = 0  # Match specific character
 OP_ANY = 1  # Match any character (including \n)
 OP_SPLIT = 2  # Jump to pc1 or pc2

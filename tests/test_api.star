@@ -1,7 +1,12 @@
+"""
+Tests for the high-level API functions: findall, sub, split.
+"""
+
 load("re.bzl", "compile", "findall", "matches", "split", "sub")
-load("tests/utils.star", "assert_eq", "assert_match")
+load("tests/utils.star", "assert_eq")
 
 def run_tests_api():
+    """Runs API tests."""
     print("--- Running API Tests ---")
 
     # Test Compilation Reuse
