@@ -66,6 +66,11 @@ def run_tests_api():
     expected = "AbAAc"
     assert_eq(res, expected, "sub function")
 
+    # Test 4: Named Backreferences
+    res = sub("(?P<name>\\w+)", "Hello \\g<name>", "World")
+    expected = "Hello World"
+    assert_eq(res, expected, "sub named backref")
+
     print("--- Testing split ---")
 
     # Test 1: Simple split

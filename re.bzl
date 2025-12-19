@@ -1069,7 +1069,7 @@ def _execute_core(instructions, input_str, num_regs, start_index = 0, initial_re
 def _execute(instructions, input_str, num_regs, start_index = 0, initial_regs = None):
     return _execute_core(instructions, input_str, num_regs, start_index, initial_regs)
 
-def _expand_replacement(repl, match_str, groups):
+def _expand_replacement(repl, match_str, groups, named_groups = {}):
     """Expands backreferences in replacement string."""
 
     # Simple implementation: replace \1, \2, etc.
@@ -1096,9 +1096,24 @@ def _expand_replacement(repl, match_str, groups):
                 skip = 1
                 continue
             elif next_c == "g" and i + 2 < repl_len and repl[i + 2] == "<":
-                # Named group \g<name> - TODO: Need named group map here.
-                # For now, just handle numeric.
-                pass
+                # Named group \g<name>
+                start_name = i + 3
+                end_name = -1
+                for k in range(start_name, min(start_name + 32, repl_len)):
+                    if repl[k] == ">":
+                        end_name = k
+                        break
+
+                if end_name != -1:
+                    name = repl[start_name:end_name]
+                    if name in named_groups:
+                        gid = named_groups[name]
+                        if gid <= len(groups):
+                            val = groups[gid - 1]
+                            if val != None:
+                                res += val
+                    skip = end_name - i
+                    continue
 
         res += c
     return res
@@ -1302,7 +1317,7 @@ def sub(pattern, repl, text, count = 0):
             # Simple MVP: pass match string.
             replacement = repl(match_str)
         else:
-            replacement = _expand_replacement(repl, match_str, groups)
+            replacement = _expand_replacement(repl, match_str, groups, compiled["named_groups"])
 
         res_parts.append(replacement)
 
