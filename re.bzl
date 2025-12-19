@@ -13,6 +13,7 @@ Designed for environments without 're' module, recursion, or 'while' loops.
 
 # Bytecode Instructions
 OP_CHAR = 0  # Match specific character
+MAX_GROUP_NAME_LEN = 32
 OP_ANY = 1  # Match any character (including \n)
 OP_SPLIT = 2  # Jump to pc1 or pc2
 OP_JUMP = 3  # Jump to pc
@@ -246,7 +247,7 @@ def _compile_regex(pattern, start_group_id = 0):
                         # Named Group (?P<name>...)
                         start_name = i + 4
                         end_name = -1
-                        for k in range(start_name, min(start_name + 32, pattern_len)):
+                        for k in range(start_name, min(start_name + MAX_GROUP_NAME_LEN, pattern_len)):
                             if pattern[k] == ">":
                                 end_name = k
                                 break
@@ -257,7 +258,7 @@ def _compile_regex(pattern, start_group_id = 0):
                         # Named Backreference (?P=name)
                         start_name = i + 4
                         end_name = -1
-                        for k in range(start_name, min(start_name + 32, pattern_len)):
+                        for k in range(start_name, min(start_name + MAX_GROUP_NAME_LEN, pattern_len)):
                             if pattern[k] == ")":
                                 end_name = k
                                 break
@@ -1120,7 +1121,7 @@ def _expand_replacement(repl, match_str, groups, named_groups = {}):
                 # Named group \g<name>
                 start_name = i + 3
                 end_name = -1
-                for k in range(start_name, min(start_name + 32, repl_len)):
+                for k in range(start_name, min(start_name + MAX_GROUP_NAME_LEN, repl_len)):
                     if repl[k] == ">":
                         end_name = k
                         break
