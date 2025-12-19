@@ -12,6 +12,7 @@ Designed for environments without 're' module, recursion, or 'while' loops.
 """
 
 MAX_GROUP_NAME_LEN = 32
+MAX_EPSILON_VISITS_FACTOR = 20
 
 # Bytecode Instructions
 OP_CHAR = 0  # Match specific character
@@ -581,8 +582,11 @@ def _get_epsilon_closure(instructions, input_str, input_len, start_pc, start_reg
     stack = [(start_pc, start_regs)]
     visited = {}
 
-    # Limit to prevent infinite loops in epsilon cycles
-    limit = len(instructions) * 20
+    # Heuristic limit for epsilon closure. Starlark requires bounded loops.
+    # This factor allows for complex closures (visiting instructions multiple times
+    # with different registers) while preventing pathological cases from exceeding
+    # O(M) work per character.
+    limit = len(instructions) * MAX_EPSILON_VISITS_FACTOR
 
     for _ in range(limit):
         if not stack:
@@ -650,6 +654,7 @@ def _get_epsilon_closure(instructions, input_str, input_len, start_pc, start_reg
                 stack.append((pc + 1, list(regs)))
         else:
             reachable.append((pc, regs))
+
     return reachable
 
 def _check_simple_match(inst, char):
