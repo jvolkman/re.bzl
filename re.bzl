@@ -859,7 +859,7 @@ def _process_batch(instructions, batch, char, char_idx, input_str, input_len):
                 next_threads.append((c_pc, c_regs))
     return next_threads, new_waiting_threads, lookarounds, match_regs
 
-def _execute_core(instructions, input_str, num_regs, start_index = 0, initial_regs = None):
+def _execute_core(instructions, input_str, num_regs, start_index = 0, initial_regs = None, anchored = False):
     if initial_regs == None:
         initial_regs = [-1] * num_regs
 
@@ -942,7 +942,7 @@ def _execute_core(instructions, input_str, num_regs, start_index = 0, initial_re
                             frame["threads"].append((c_pc, c_regs))
 
                 # Unanchored Search Injection (Root Frame Only)
-                if len(stack) == 1:
+                if len(stack) == 1 and not anchored:
                     is_anchored = False
                     if len(frame["instructions"]) > 1 and frame["instructions"][1][0] == OP_ANCHOR_START:
                         is_anchored = True
@@ -1066,8 +1066,8 @@ def _execute_core(instructions, input_str, num_regs, start_index = 0, initial_re
 
     return final_result
 
-def _execute(instructions, input_str, num_regs, start_index = 0, initial_regs = None):
-    return _execute_core(instructions, input_str, num_regs, start_index, initial_regs)
+def _execute(instructions, input_str, num_regs, start_index = 0, initial_regs = None, anchored = False):
+    return _execute_core(instructions, input_str, num_regs, start_index, initial_regs, anchored)
 
 def _expand_replacement(repl, match_str, groups, named_groups = {}):
     """Expands backreferences in replacement string."""
@@ -1135,8 +1135,8 @@ def compile(pattern):
         "pattern": pattern,
     }
 
-def matches(pattern, text):
-    """Matches a regex pattern against text.
+def search(pattern, text):
+    """Scan through string looking for the first location where the regex pattern produces a match.
 
     Args:
       pattern: The regex pattern string or a compiled regex object.
@@ -1157,7 +1157,45 @@ def matches(pattern, text):
     # Calculate number of registers needed (2 per group + 2 for whole match)
     num_regs = (group_count + 1) * 2
 
-    regs = _execute(bytecode, text, num_regs)
+    regs = _execute(bytecode, text, num_regs, anchored = False)
+    if not regs:
+        return None
+    results = {}
+    for i in range(0, len(regs), 2):
+        start = regs[i]
+        end = regs[i + 1]
+        if start != -1 and end != -1:
+            results[i // 2] = text[start:end]
+
+    for name, gid in named_groups.items():
+        if gid in results:
+            results[name] = results[gid]
+
+    return results
+
+def match(pattern, text):
+    """Try to apply the pattern at the start of the string.
+
+    Args:
+      pattern: The regex pattern string or a compiled regex object.
+      text: The text to match against.
+
+    Returns:
+      A dictionary containing the match results (group ID/name -> matched string),
+      or None if no match was found.
+    """
+    if type(pattern) == "string":
+        bytecode, named_groups, group_count = _compile_regex(pattern)
+    else:
+        # Assume it's a compiled regex object (dict)
+        bytecode = pattern["bytecode"]
+        named_groups = pattern["named_groups"]
+        group_count = pattern["group_count"]
+
+    # Calculate number of registers needed (2 per group + 2 for whole match)
+    num_regs = (group_count + 1) * 2
+
+    regs = _execute(bytecode, text, num_regs, anchored = True)
     if not regs:
         return None
     results = {}

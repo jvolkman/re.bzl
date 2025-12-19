@@ -2,7 +2,7 @@
 Utility functions for the Starlark regex engine tests.
 """
 
-load("re.bzl", "matches")
+load("re.bzl", "search")
 
 def assert_match(pattern, text, expected_match):
     """Asserts that a pattern matches the text with the expected result.
@@ -12,7 +12,7 @@ def assert_match(pattern, text, expected_match):
       text: The input text to match against.
       expected_match: The expected match string (group 0) or None if no match is expected.
     """
-    res = matches(pattern, text)
+    res = search(pattern, text)
     if expected_match == None:
         if res != None:
             print("FAIL: '%s' on '%s' expected None, got %s" % (pattern, text, res))
@@ -42,7 +42,7 @@ def run_suite(name, cases):
     """
     print("--- Running %s ---" % name)
     for pattern, text, expected in cases:
-        res = matches(pattern, text)
+        res = search(pattern, text)
         status = "FAIL"
 
         if res == None and expected == None:

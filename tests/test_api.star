@@ -2,7 +2,7 @@
 Tests for the high-level API functions: findall, sub, split.
 """
 
-load("re.bzl", "compile", "findall", "matches", "split", "sub")
+load("re.bzl", "compile", "findall", "match", "search", "split", "sub")
 load("tests/utils.star", "assert_eq")
 
 def run_tests_api():
@@ -14,7 +14,7 @@ def run_tests_api():
     r = compile("a+")
 
     # Test 1: "aa"
-    res1 = matches(r, "aa")
+    res1 = search(r, "aa")
     if res1 and res1[0] == "aa":
         # print("[PASS] Reuse 1: 'aa'")
         pass
@@ -22,12 +22,35 @@ def run_tests_api():
         print("[FAIL] Reuse 1: Expected 'aa', Got %s" % res1)
 
     # Test 2: "aaaa"
-    res2 = matches(r, "aaaa")
+    res2 = search(r, "aaaa")
     if res2 and res2[0] == "aaaa":
         # print("[PASS] Reuse 2: 'aaaa'")
         pass
     else:
         print("[FAIL] Reuse 2: Expected 'aaaa', Got %s" % res2)
+
+    print("--- Testing match vs search ---")
+
+    # search finds anywhere
+    res = search("b", "abc")
+    if res and res[0] == "b":
+        pass
+    else:
+        print("[FAIL] search('b', 'abc'): Expected 'b', Got %s" % res)
+
+    # match anchors at start
+    res = match("b", "abc")
+    if res == None:
+        pass
+    else:
+        print("[FAIL] match('b', 'abc'): Expected None, Got %s" % res)
+
+    # match finds at start
+    res = match("a", "abc")
+    if res and res[0] == "a":
+        pass
+    else:
+        print("[FAIL] match('a', 'abc'): Expected 'a', Got %s" % res)
 
     print("--- Testing findall ---")
 
