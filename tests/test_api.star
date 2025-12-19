@@ -2,7 +2,7 @@
 Tests for the high-level API functions: findall, sub, split.
 """
 
-load("re.bzl", "compile", "findall", "match", "search", "split", "sub")
+load("re.bzl", "compile", "findall", "fullmatch", "match", "search", "split", "sub")
 load("tests/utils.star", "assert_eq")
 
 def run_tests_api():
@@ -51,6 +51,29 @@ def run_tests_api():
         pass
     else:
         print("[FAIL] match('a', 'abc'): Expected 'a', Got %s" % res)
+
+    print("--- Testing fullmatch ---")
+
+    # fullmatch "a" on "a" -> Match
+    res = fullmatch("a", "a")
+    if res and res[0] == "a":
+        pass
+    else:
+        print("[FAIL] fullmatch('a', 'a'): Expected 'a', Got %s" % res)
+
+    # fullmatch "a" on "ab" -> None
+    res = fullmatch("a", "ab")
+    if res == None:
+        pass
+    else:
+        print("[FAIL] fullmatch('a', 'ab'): Expected None, Got %s" % res)
+
+    # fullmatch "ab" on "ab" -> Match
+    res = fullmatch("ab", "ab")
+    if res and res[0] == "ab":
+        pass
+    else:
+        print("[FAIL] fullmatch('ab', 'ab'): Expected 'ab', Got %s" % res)
 
     print("--- Testing findall ---")
 

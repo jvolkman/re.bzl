@@ -1232,6 +1232,22 @@ def match(pattern, text):
 
     return results
 
+def fullmatch(pattern, text):
+    """Try to apply the pattern to the entire string.
+
+    Args:
+      pattern: The regex pattern string or a compiled regex object.
+      text: The text to match against.
+
+    Returns:
+      A dictionary containing the match results (group ID/name -> matched string),
+      or None if no match was found.
+    """
+    res = match(pattern, text)
+    if res and len(res[0]) == len(text):
+        return res
+    return None
+
 def findall(pattern, text):
     """Return all non-overlapping matches of pattern in string, as a list of strings.
 
