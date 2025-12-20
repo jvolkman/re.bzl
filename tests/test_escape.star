@@ -29,3 +29,10 @@ def run_tests_escape():
     # Escaping in character classes
     assert_match("[a\\-z]", "-", "-")  # Literal -
     assert_match("[\\]]", "]", "]")  # Literal ]
+
+    # Hex escapes (exercises _chr)
+    assert_match("\\x41", "A", "A")
+    assert_match("\\x61", "a", "a")
+    assert_match("\\x30", "0", "0")
+    assert_match("[\\x41-\\x44]*", "BCDCX", "BCDC")
+    assert_match("\\x", "x", "x")  # Invalid hex fallback

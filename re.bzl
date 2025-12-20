@@ -14,6 +14,44 @@ Designed for environments without 're' module, recursion, or 'while' loops.
 MAX_GROUP_NAME_LEN = 32
 MAX_EPSILON_VISITS_FACTOR = 20
 
+_CHR_LOOKUP = (
+    "\000\001\002\003\004\005\006\007" +
+    "\010\011\012\013\014\015\016\017" +
+    "\020\021\022\023\024\025\026\027" +
+    "\030\031\032\033\034\035\036\037" +
+    "\040\041\042\043\044\045\046\047" +
+    "\050\051\052\053\054\055\056\057" +
+    "\060\061\062\063\064\065\066\067" +
+    "\070\071\072\073\074\075\076\077" +
+    "\100\101\102\103\104\105\106\107" +
+    "\110\111\112\113\114\115\116\117" +
+    "\120\121\122\123\124\125\126\127" +
+    "\130\131\132\133\134\135\136\137" +
+    "\140\141\142\143\144\145\146\147" +
+    "\150\151\152\153\154\155\156\157" +
+    "\160\161\162\163\164\165\166\167" +
+    "\170\171\172\173\174\175\176\177" +
+    "\200\201\202\203\204\205\206\207" +
+    "\210\211\212\213\214\215\216\217" +
+    "\220\221\222\223\224\225\226\227" +
+    "\230\231\232\233\234\235\236\237" +
+    "\240\241\242\243\244\245\246\247" +
+    "\250\251\252\253\254\255\256\257" +
+    "\260\261\262\263\264\265\266\267" +
+    "\270\271\272\273\274\275\276\277" +
+    "\300\301\302\303\304\305\306\307" +
+    "\310\311\312\313\314\315\316\317" +
+    "\320\321\322\323\324\325\326\327" +
+    "\330\331\332\333\334\335\336\337" +
+    "\340\341\342\343\344\345\346\347" +
+    "\350\351\352\353\354\355\356\357" +
+    "\360\361\362\363\364\365\366\367" +
+    "\370\371\372\373\374\375\376\377"
+)
+
+def _chr(i):
+    return _CHR_LOOKUP[i]
+
 # Bytecode Instructions
 OP_CHAR = 0  # Match specific character
 OP_ANY = 1  # Match any character (including \n)
@@ -62,6 +100,65 @@ def _get_case_variants(char):
         return [lower, char]
     return [char]
 
+def _parse_escape(pattern, i, pattern_len):
+    """Parses an escape sequence at i. Returns (char, last_consumed_i)."""
+    if i >= pattern_len:
+        return None, i
+
+    char = pattern[i]
+
+    if char == "x":
+        if i + 2 < pattern_len:
+            hex_str = pattern[i + 1:i + 3]
+            valid_hex = True
+            for k in range(len(hex_str)):
+                hc = hex_str[k]
+                if not ((hc >= "0" and hc <= "9") or (hc >= "a" and hc <= "f") or (hc >= "A" and hc <= "F")):
+                    valid_hex = False
+                    break
+
+            if valid_hex:
+                return _chr(int(hex_str, 16)), i + 2
+        return "x", i
+
+    if char == "n":
+        return "\n", i
+    elif char == "r":
+        return "\r", i
+    elif char == "t":
+        return "\t", i
+    elif char == "f":
+        return "\f", i
+    elif char == "v":
+        return "\v", i
+
+    return char, i
+
+def _parse_set_atom(pattern, i, pattern_len):
+    """Parses one atom in a set. Returns (char_list, new_i)."""
+    current = pattern[i]
+    char_set = []
+
+    if current == "\\" and i + 1 < pattern_len:
+        i += 1
+        next_c = pattern[i]
+        predef = _get_predefined_class(next_c)
+        if predef:
+            pset, pneg = predef
+            if not pneg:
+                char_set.extend(pset)
+        else:
+            # Handle escapes inside []
+            char, new_i = _parse_escape(pattern, i, pattern_len)
+            char_set.append(char)
+            i = new_i
+        i += 1
+    else:
+        char_set.append(current)
+        i += 1
+
+    return char_set, i
+
 def _compile_regex(pattern, start_group_id = 0):
     """Compiles regex to bytecode using Thompson NFA construction.
 
@@ -83,7 +180,8 @@ def _compile_regex(pattern, start_group_id = 0):
 
     pattern_len = len(pattern)
 
-    # Starlark for loop to simulate while loop
+    # range(pattern_len) by itself should be sufficient.
+    # TODO: possibly remove multiplier buffer
     for _ in range(pattern_len * 3):
         if i >= pattern_len:
             break
@@ -114,69 +212,38 @@ def _compile_regex(pattern, start_group_id = 0):
                 if i >= pattern_len or pattern[i] == "]":
                     break
 
-                # Handle escaping and shortcuts inside []
-                current = pattern[i]
-                if current == "\\" and i + 1 < pattern_len:
-                    i += 1
-                    next_c = pattern[i]
-                    predef = _get_predefined_class(next_c)
-                    if predef:
-                        pset, pneg = predef
-                        if not pneg:
-                            char_set.extend(pset)
-                    else:
-                        # Handle standard escapes inside []
-                        if next_c == "n":
-                            char_set.append("\n")
-                        elif next_c == "r":
-                            char_set.append("\r")
-                        elif next_c == "t":
-                            char_set.append("\t")
-                        elif next_c == "f":
-                            char_set.append("\f")
-                        elif next_c == "v":
-                            char_set.append("\v")
-                        elif next_c == "x" and i + 2 < pattern_len:
-                            hex_str = pattern[i + 1:i + 3]
-                            valid_hex = True
-                            for k in range(len(hex_str)):
-                                hc = hex_str[k]
-                                if not ((hc >= "0" and hc <= "9") or (hc >= "a" and hc <= "f") or (hc >= "A" and hc <= "F")):
-                                    valid_hex = False
-                                    break
+                chars, new_i = _parse_set_atom(pattern, i, pattern_len)
 
-                            if valid_hex:
-                                char_set.append(chr(int(hex_str, 16)))
-                                i += 2
+                is_range = False
+                if new_i < pattern_len and pattern[new_i] == "-" and new_i + 1 < pattern_len and pattern[new_i + 1] != "]":
+                    if len(chars) == 1 and type(chars[0]) == "string":
+                        end_chars, end_i = _parse_set_atom(pattern, new_i + 1, pattern_len)
+                        if len(end_chars) == 1 and type(end_chars[0]) == "string":
+                            start_c = chars[0]
+                            end_c = end_chars[0]
+                            char_set.append((start_c, end_c))
+
+                            if case_insensitive:
+                                if start_c >= "a" and start_c <= "z" and end_c >= "a" and end_c <= "z":
+                                    char_set.append((start_c.upper(), end_c.upper()))
+                                elif start_c >= "A" and start_c <= "Z" and end_c >= "A" and end_c <= "Z":
+                                    char_set.append((start_c.lower(), end_c.lower()))
+
+                            i = end_i
+                            is_range = True
+
+                if not is_range:
+                    if case_insensitive:
+                        expanded = []
+                        for c in chars:
+                            if type(c) == "string":
+                                expanded.extend(_get_case_variants(c))
                             else:
-                                char_set.append("x")  # Fallback
-                        elif case_insensitive:
-                            char_set.extend(_get_case_variants(next_c))
-                        else:
-                            char_set.append(next_c)
-                    i += 1
-                    continue
-
-                # Check for range [a-z]
-                if i + 2 < pattern_len and pattern[i + 1] == "-" and pattern[i + 2] != "]":
-                    start_c = pattern[i]
-                    end_c = pattern[i + 2]
-
-                    char_set.append((start_c, end_c))
-
-                    if case_insensitive:
-                        if start_c >= "a" and start_c <= "z" and end_c >= "a" and end_c <= "z":
-                            char_set.append((start_c.upper(), end_c.upper()))
-                        elif start_c >= "A" and start_c <= "Z" and end_c >= "A" and end_c <= "Z":
-                            char_set.append((start_c.lower(), end_c.lower()))
-
-                    i += 3
-                else:
-                    if case_insensitive:
-                        char_set.extend(_get_case_variants(pattern[i]))
+                                expanded.append(c)
+                        char_set.extend(expanded)
                     else:
-                        char_set.append(pattern[i])
-                    i += 1
+                        char_set.extend(chars)
+                    i = new_i
 
             instructions.append((OP_SET, (char_set, is_negated), None, None))
             i = _handle_quantifier(pattern, i, instructions)
@@ -318,45 +385,18 @@ def _compile_regex(pattern, start_group_id = 0):
                 elif next_c >= "1" and next_c <= "9":
                     fail("Backreferences not supported")
                 else:
-                    # Handle standard escapes
-                    literal_char = None
-                    if next_c == "n":
-                        literal_char = "\n"
-                    elif next_c == "r":
-                        literal_char = "\r"
-                    elif next_c == "t":
-                        literal_char = "\t"
-                    elif next_c == "f":
-                        literal_char = "\f"
-                    elif next_c == "v":
-                        literal_char = "\v"
-                    elif next_c == "x" and i + 2 < pattern_len:
-                        hex_str = pattern[i + 1:i + 3]
+                    # Handle escapes
+                    char, new_i = _parse_escape(pattern, i, pattern_len)
+                    i = new_i
 
-                        # Starlark has no try/except. Manual check.
-                        valid_hex = True
-                        for k in range(len(hex_str)):
-                            hc = hex_str[k]
-                            if not ((hc >= "0" and hc <= "9") or (hc >= "a" and hc <= "f") or (hc >= "A" and hc <= "F")):
-                                valid_hex = False
-                                break
-
-                        if valid_hex:
-                            literal_char = chr(int(hex_str, 16))
-                            i += 2
-                        else:
-                            literal_char = "x"  # Fallback
-
-                    if literal_char:
-                        instructions.append((OP_CHAR, literal_char, None, None))
-                    elif case_insensitive:
-                        variants = _get_case_variants(next_c)
+                    if case_insensitive:
+                        variants = _get_case_variants(char)
                         if len(variants) > 1:
                             instructions.append((OP_SET, (variants, False), None, None))
                         else:
-                            instructions.append((OP_CHAR, next_c, None, None))
+                            instructions.append((OP_CHAR, char, None, None))
                     else:
-                        instructions.append((OP_CHAR, next_c, None, None))
+                        instructions.append((OP_CHAR, char, None, None))
                 i = _handle_quantifier(pattern, i, instructions)
 
         else:
