@@ -280,10 +280,7 @@ def _compile_regex(pattern, start_group_id = 0):
     })
 
     pattern_len = len(pattern)
-
-    # range(pattern_len) by itself should be sufficient.
-    # TODO: possibly remove multiplier buffer
-    for _ in range(pattern_len * 3):
+    for _ in range(pattern_len):
         if i >= pattern_len:
             break
 
