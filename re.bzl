@@ -92,6 +92,39 @@ def _get_predefined_class(char):
         return ([" ", "\t", "\n", "\r", "\f", "\v"], True)
     return None
 
+def _get_posix_class(name):
+    """Returns the character set for a POSIX class name."""
+    if name == "alnum":
+        return [("0", "9"), ("A", "Z"), ("a", "z")]
+    elif name == "alpha":
+        return [("A", "Z"), ("a", "z")]
+    elif name == "ascii":
+        return [("\000", "\177")]
+    elif name == "blank":
+        return [" ", "\t"]
+    elif name == "cntrl":
+        return [("\000", "\037"), "\177"]
+    elif name == "digit":
+        return [("0", "9")]
+    elif name == "graph":
+        return [("\041", "\176")]
+    elif name == "lower":
+        return [("a", "z")]
+    elif name == "print":
+        return [("\040", "\176")]
+    elif name == "punct":
+        # [!-/:-@[-`{-~]
+        return [("\041", "\057"), ("\072", "\100"), ("\133", "\140"), ("\173", "\176")]
+    elif name == "space":
+        return [" ", "\t", "\n", "\r", "\f", "\v"]
+    elif name == "upper":
+        return [("A", "Z")]
+    elif name == "word":
+        return [("0", "9"), ("A", "Z"), ("a", "z"), "_"]
+    elif name == "xdigit":
+        return [("0", "9"), ("A", "F"), ("a", "f")]
+    return None
+
 def _parse_escape(pattern, i, pattern_len):
     """Parses an escape sequence at i. Returns (char, last_consumed_i)."""
     if i >= pattern_len:
@@ -100,6 +133,25 @@ def _parse_escape(pattern, i, pattern_len):
     char = pattern[i]
 
     if char == "x":
+        if i + 1 < pattern_len and pattern[i + 1] == "{":
+            # \x{h...h}
+            end_brace = -1
+            for k in range(i + 2, min(i + 12, pattern_len)):
+                if pattern[k] == "}":
+                    end_brace = k
+                    break
+            if end_brace != -1:
+                hex_str = pattern[i + 2:end_brace]
+
+                # Starlark int(s, 16) works
+                val = int(hex_str, 16)
+                if val <= 255:
+                    return _chr(val), end_brace
+                else:
+                    # For now, we only support up to 255 in our _chr lookup
+                    # but we could return the raw int if we changed _chr
+                    fail("Hex escape too large: " + hex_str)
+
         if i + 2 < pattern_len:
             hex_str = pattern[i + 1:i + 3]
             valid_hex = True
@@ -113,6 +165,19 @@ def _parse_escape(pattern, i, pattern_len):
                 return _chr(int(hex_str, 16)), i + 2
         return "x", i
 
+    if char >= "0" and char <= "7":
+        oct_str = char
+        consumed = 0
+        if i + 1 < pattern_len and pattern[i + 1] >= "0" and pattern[i + 1] <= "7":
+            oct_str += pattern[i + 1]
+            consumed = 1
+            if i + 2 < pattern_len and pattern[i + 2] >= "0" and pattern[i + 2] <= "7":
+                # Check if <= 377 (255)
+                if int(oct_str + pattern[i + 2], 8) <= 255:
+                    oct_str += pattern[i + 2]
+                    consumed = 2
+        return _chr(int(oct_str, 8)), i + 1 + consumed
+
     if char == "n":
         return "\n", i
     elif char == "r":
@@ -123,6 +188,8 @@ def _parse_escape(pattern, i, pattern_len):
         return "\f", i
     elif char == "v":
         return "\v", i
+    elif char == "a":
+        return "\007", i
 
     return char, i
 
@@ -145,6 +212,39 @@ def _parse_set_atom(pattern, i, pattern_len):
             char_set.append(char)
             i = new_i
         i += 1
+    elif current == "[" and i + 1 < pattern_len and pattern[i + 1] == ":":
+        # POSIX class [[:name:]]
+        i += 2
+        is_negated = False
+        if i < pattern_len and pattern[i] == "^":
+            is_negated = True
+            i += 1
+
+        start_name = i
+        end_name = -1
+        for k in range(i, pattern_len - 1):
+            if pattern[k] == ":" and pattern[k + 1] == "]":
+                end_name = k
+                break
+
+        if end_name != -1:
+            name = pattern[start_name:end_name]
+            pset = _get_posix_class(name)
+            if pset:
+                if is_negated:
+                    char_set.append(("not", pset))
+                else:
+                    char_set.extend(pset)
+
+                i = end_name + 2
+            else:
+                # Not a valid POSIX class, treat as literal [
+                char_set.append("[")
+                i = start_name - 1  # Back to after [
+        else:
+            # No closing :], treat as literal [
+            char_set.append("[")
+            i += 1
     else:
         char_set.append(current)
         i += 1
@@ -166,6 +266,7 @@ def _compile_regex(pattern, start_group_id = 0):
     case_insensitive = False
     multiline = False
     dot_all = False
+    ungreedy = False
 
     # Always save group 0 (full match) start
     instructions.append((OP_SAVE, 0, None, None))
@@ -244,6 +345,7 @@ def _compile_regex(pattern, start_group_id = 0):
             is_capturing = True
             group_name = None
             is_group_start = True
+            saved_flags = (case_insensitive, multiline, dot_all, ungreedy)
 
             if i + 2 < pattern_len and pattern[i + 1] == "?":
                 la = pattern[i + 2]
@@ -253,7 +355,20 @@ def _compile_regex(pattern, start_group_id = 0):
                 elif la == "=" or la == "!":
                     fail("Lookarounds not supported")
                 elif la == "<":
-                    fail("Lookbehinds not supported")
+                    # Check if it's (?<name>...)
+                    if i + 3 < pattern_len and not (pattern[i + 3] == "=" or pattern[i + 3] == "!"):
+                        # Named Group (?<name>...)
+                        start_name = i + 3
+                        end_name = -1
+                        for k in range(start_name, min(start_name + MAX_GROUP_NAME_LEN, pattern_len)):
+                            if pattern[k] == ">":
+                                end_name = k
+                                break
+                        if end_name != -1:
+                            group_name = pattern[start_name:end_name]
+                            i = end_name  # Skip past >
+                    else:
+                        fail("Lookbehinds not supported")
 
                 elif la == "P" and i + 3 < pattern_len:
                     if pattern[i + 3] == "<":
@@ -270,21 +385,28 @@ def _compile_regex(pattern, start_group_id = 0):
                     elif pattern[i + 3] == "=":
                         fail("Named backreferences not supported")
                 else:
-                    # Check for flags e.g. (?i), (?ms), (?-s)
+                    # Check for flags e.g. (?i), (?ms), (?-s), (?i:...)
                     # We check looking forward
                     temp_negate = False
                     temp_case = case_insensitive
                     temp_multi = multiline
                     temp_dot = dot_all
+                    temp_ungreedy = ungreedy
 
                     k = i + 2
                     found_end = False
+                    is_scoped = False
+
                     for _ in range(10):
                         if k >= pattern_len:
                             break
                         c_flag = pattern[k]
                         if c_flag == ")":
                             found_end = True
+                            break
+                        if c_flag == ":":
+                            found_end = True
+                            is_scoped = True
                             break
                         if c_flag == "-":
                             temp_negate = True
@@ -294,6 +416,8 @@ def _compile_regex(pattern, start_group_id = 0):
                             temp_multi = not temp_negate
                         elif c_flag == "s":
                             temp_dot = not temp_negate
+                        elif c_flag == "U":
+                            temp_ungreedy = not temp_negate
                         else:
                             # Not a flag group, treat as normal group starting with ?
                             break
@@ -303,8 +427,14 @@ def _compile_regex(pattern, start_group_id = 0):
                         case_insensitive = temp_case
                         multiline = temp_multi
                         dot_all = temp_dot
-                        i = k  # Move to )
-                        is_group_start = False
+                        ungreedy = temp_ungreedy
+                        i = k  # Move to ) or :
+
+                        if is_scoped:
+                            is_capturing = False
+                            is_group_start = True
+                        else:
+                            is_group_start = False
 
             if is_group_start:
                 gid = -1
@@ -322,6 +452,7 @@ def _compile_regex(pattern, start_group_id = 0):
                     "start_pc": len(instructions) - 1,
                     "branch_starts": [len(instructions)],
                     "exit_jumps": [],
+                    "flags": saved_flags,
                 })
 
         elif char == ")":
@@ -341,7 +472,11 @@ def _compile_regex(pattern, start_group_id = 0):
                         instructions.append((OP_SAVE, top["gid"] * 2 + 1, None, None))
 
                     start_pc_fix = top["start_pc"]
-                    i = _handle_quantifier(pattern, i, instructions, atom_start = start_pc_fix)
+
+                    # Restore flags
+                    case_insensitive, multiline, dot_all, ungreedy = top["flags"]
+
+                    i = _handle_quantifier(pattern, i, instructions, atom_start = start_pc_fix, ungreedy = ungreedy)
 
         elif char == "|":
             if stack and stack[-1]["type"] == "group":
@@ -357,9 +492,44 @@ def _compile_regex(pattern, start_group_id = 0):
                 instructions.append((OP_ANY, None, None, None))  # ANY (includes \n)
             else:
                 instructions.append((OP_ANY_NO_NL, None, None, None))  # ANY_NO_NL (excludes \n)
-            i = _handle_quantifier(pattern, i, instructions)
+            i = _handle_quantifier(pattern, i, instructions, ungreedy = ungreedy)
 
         elif char == "\\":
+            if i + 1 < pattern_len:
+                next_c = pattern[i + 1]
+                if next_c == "A":
+                    instructions.append((OP_ANCHOR_START, None, None, None))
+                    i += 2
+                    continue
+                elif next_c == "z":
+                    instructions.append((OP_ANCHOR_END, None, None, None))
+                    i += 2
+                    continue
+                elif next_c == "Q":
+                    # Quoted Literal \Q...\E
+                    i += 2
+                    found_e = False
+                    for k in range(i, pattern_len - 1):
+                        if pattern[k] == "\\" and pattern[k + 1] == "E":
+                            # Match everything from i to k as literal
+                            for j in range(i, k):
+                                if case_insensitive:
+                                    instructions.append((OP_CHAR_I, pattern[j].lower(), None, None))
+                                else:
+                                    instructions.append((OP_CHAR, pattern[j], None, None))
+                            i = k + 2  # Skip \E
+                            found_e = True
+                            break
+                    if not found_e:
+                        # Match to end
+                        for j in range(i, pattern_len):
+                            if case_insensitive:
+                                instructions.append((OP_CHAR_I, pattern[j].lower(), None, None))
+                            else:
+                                instructions.append((OP_CHAR, pattern[j], None, None))
+                        i = pattern_len
+                    continue
+
             i += 1
             if i < pattern_len:
                 next_c = pattern[i]
@@ -373,8 +543,6 @@ def _compile_regex(pattern, start_group_id = 0):
                     instructions.append((OP_WORD_BOUNDARY, None, None, None))
                 elif next_c == "B":
                     instructions.append((OP_NOT_WORD_BOUNDARY, None, None, None))
-                elif next_c >= "1" and next_c <= "9":
-                    fail("Backreferences not supported")
                 else:
                     # Handle escapes
                     char, new_i = _parse_escape(pattern, i, pattern_len)
@@ -386,14 +554,14 @@ def _compile_regex(pattern, start_group_id = 0):
                         instructions.append((OP_CHAR_I, char, None, None))
                     else:
                         instructions.append((OP_CHAR, char, None, None))
-                i = _handle_quantifier(pattern, i, instructions)
+                i = _handle_quantifier(pattern, i, instructions, ungreedy = ungreedy)
 
         else:
             if case_insensitive:
                 instructions.append((OP_CHAR_I, char.lower(), None, None))
             else:
                 instructions.append((OP_CHAR, char, None, None))
-            i = _handle_quantifier(pattern, i, instructions)
+            i = _handle_quantifier(pattern, i, instructions, ungreedy = ungreedy)
 
         i += 1
 
@@ -487,7 +655,7 @@ def _apply_plus(insts, atom_start, lazy = False):
     else:
         insts.append((OP_SPLIT, None, atom_start, next_pc))
 
-def _handle_quantifier(pattern, i, insts, atom_start = -1):
+def _handle_quantifier(pattern, i, insts, atom_start = -1, ungreedy = False):
     if atom_start == -1:
         atom_start = len(insts) - 1
 
@@ -540,6 +708,8 @@ def _handle_quantifier(pattern, i, insts, atom_start = -1):
 
             if valid:
                 is_lazy, final_i = check_lazy(end_brace)
+                if ungreedy:
+                    is_lazy = not is_lazy
 
                 template = insts[atom_start:]
                 for _ in range(len(template)):
@@ -589,14 +759,20 @@ def _handle_quantifier(pattern, i, insts, atom_start = -1):
     # 2. Standard Quantifiers
     if next_char == "?":
         is_lazy, final_i = check_lazy(i + 1)
+        if ungreedy:
+            is_lazy = not is_lazy
         _apply_question_mark(insts, atom_start, lazy = is_lazy)
         return final_i
     elif next_char == "*":
         is_lazy, final_i = check_lazy(i + 1)
+        if ungreedy:
+            is_lazy = not is_lazy
         _apply_star(insts, atom_start, lazy = is_lazy)
         return final_i
     elif next_char == "+":
         is_lazy, final_i = check_lazy(i + 1)
+        if ungreedy:
+            is_lazy = not is_lazy
         _apply_plus(insts, atom_start, lazy = is_lazy)
         return final_i
     else:
@@ -697,7 +873,21 @@ def _check_simple_match(inst, char, char_lower):
         in_set = False
         for item in char_set_data:
             if type(item) == "tuple":
-                if char >= item[0] and char <= item[1]:
+                if item[0] == "not":
+                    # Negated POSIX class inside []
+                    in_pset = False
+                    for pitem in item[1]:
+                        if type(pitem) == "tuple":
+                            if char >= pitem[0] and char <= pitem[1]:
+                                in_pset = True
+                                break
+                        elif char == pitem:
+                            in_pset = True
+                            break
+                    if not in_pset:
+                        in_set = True
+                        break
+                elif char >= item[0] and char <= item[1]:
                     in_set = True
                     break
             elif char == item:
@@ -709,7 +899,21 @@ def _check_simple_match(inst, char, char_lower):
         in_set = False
         for item in char_set_data:
             if type(item) == "tuple":
-                if char_lower >= item[0] and char_lower <= item[1]:
+                if item[0] == "not":
+                    # Negated POSIX class inside []
+                    in_pset = False
+                    for pitem in item[1]:
+                        if type(pitem) == "tuple":
+                            if char_lower >= pitem[0] and char_lower <= pitem[1]:
+                                in_pset = True
+                                break
+                        elif char_lower == pitem:
+                            in_pset = True
+                            break
+                    if not in_pset:
+                        in_set = True
+                        break
+                elif char_lower >= item[0] and char_lower <= item[1]:
                     in_set = True
                     break
             elif char_lower == item:
