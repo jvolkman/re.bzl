@@ -208,6 +208,7 @@ def _parse_escape(pattern, i, pattern_len):
 
     return char, i
 
+# buildifier: disable=list-append
 def _parse_set_atom(pattern, i, pattern_len):
     """Parses one atom in a set. Returns (char_list, new_i)."""
     current = pattern[i]
@@ -220,11 +221,11 @@ def _parse_set_atom(pattern, i, pattern_len):
         if predef:
             pset, pneg = predef
             if not pneg:
-                char_set.extend(pset)
+                char_set += pset
         else:
             # Handle escapes inside []
             char, new_i = _parse_escape(pattern, i, pattern_len)
-            char_set.append(char)
+            char_set += [char]
             i = new_i
         i += 1
     elif current == "[" and i + 1 < pattern_len and pattern[i + 1] == ":":
@@ -247,25 +248,26 @@ def _parse_set_atom(pattern, i, pattern_len):
             pset = _get_posix_class(name)
             if pset:
                 if is_negated:
-                    char_set.append(("not", pset))
+                    char_set += [("not", pset)]
                 else:
-                    char_set.extend(pset)
+                    char_set += pset
 
                 i = end_name + 2
             else:
                 # Not a valid POSIX class, treat as literal [
-                char_set.append("[")
+                char_set += ["["]
                 i = start_name - 1  # Back to after [
         else:
             # No closing :], treat as literal [
-            char_set.append("[")
+            char_set += ["["]
             i += 1
     else:
-        char_set.append(current)
+        char_set += [current]
         i += 1
 
     return char_set, i
 
+# buildifier: disable=list-append
 def _compile_regex(pattern, start_group_id = 0):
     """Compiles regex to bytecode using Thompson NFA construction.
 
@@ -284,15 +286,15 @@ def _compile_regex(pattern, start_group_id = 0):
     ungreedy = False
 
     # Always save group 0 (full match) start
-    instructions.append((OP_SAVE, 0, None, None))
+    instructions += [(OP_SAVE, 0, None, None)]
 
     # Root group to handle top-level alternations
-    stack.append({
+    stack += [{
         "type": "root",
         "branch_starts": [len(instructions)],
         "exit_jumps": [],
         "flags": (case_insensitive, multiline, dot_all, ungreedy),
-    })
+    }]
 
     pattern_len = len(pattern)
     for _ in range(pattern_len):
@@ -303,15 +305,15 @@ def _compile_regex(pattern, start_group_id = 0):
 
         if char == "^":
             if multiline:
-                instructions.append((OP_ANCHOR_LINE_START, None, None, None))
+                instructions += [(OP_ANCHOR_LINE_START, None, None, None)]
             else:
-                instructions.append((OP_ANCHOR_START, None, None, None))
+                instructions += [(OP_ANCHOR_START, None, None, None)]
 
         elif char == "$":
             if multiline:
-                instructions.append((OP_ANCHOR_LINE_END, None, None, None))
+                instructions += [(OP_ANCHOR_LINE_END, None, None, None)]
             else:
-                instructions.append((OP_ANCHOR_END, None, None, None))
+                instructions += [(OP_ANCHOR_END, None, None, None)]
 
         elif char == "[":
             i += 1
@@ -339,7 +341,7 @@ def _compile_regex(pattern, start_group_id = 0):
                                 start_c = start_c.lower()
                                 end_c = end_c.lower()
 
-                            char_set.append((start_c, end_c))
+                            char_set += [(start_c, end_c)]
                             i = end_i
                             is_range = True
 
@@ -347,17 +349,17 @@ def _compile_regex(pattern, start_group_id = 0):
                     if case_insensitive:
                         for c in chars:
                             if type(c) == "string":
-                                char_set.append(c.lower())
+                                char_set += [c.lower()]
                             else:
-                                char_set.append(c)
+                                char_set += [c]
                     else:
-                        char_set.extend(chars)
+                        char_set += chars
                     i = new_i
 
             if case_insensitive:
-                instructions.append((OP_SET_I, (char_set, is_negated), None, None))
+                instructions += [(OP_SET_I, (char_set, is_negated), None, None)]
             else:
-                instructions.append((OP_SET, (char_set, is_negated), None, None))
+                instructions += [(OP_SET, (char_set, is_negated), None, None)]
             i = _handle_quantifier(pattern, i, instructions)
 
         elif char == "(":
@@ -461,11 +463,11 @@ def _compile_regex(pattern, start_group_id = 0):
                 if is_capturing:
                     group_count += 1
                     gid = group_count
-                    instructions.append((OP_SAVE, gid * 2, None, None))
+                    instructions += [(OP_SAVE, gid * 2, None, None)]  # buildifier: disable=list-append
                     if group_name:
                         named_groups[group_name] = gid
 
-                stack.append({
+                stack += [{
                     "type": "group",
                     "gid": gid,
                     "is_capturing": is_capturing,
@@ -473,15 +475,15 @@ def _compile_regex(pattern, start_group_id = 0):
                     "branch_starts": [len(instructions)],
                     "exit_jumps": [],
                     "flags": saved_flags,
-                })
+                }]  # buildifier: disable=list-append
 
         elif char == ")":
             if stack:
                 top = stack.pop()
                 if top["type"] == "group":
                     if len(top["branch_starts"]) > 1:
-                        top["exit_jumps"].append(len(instructions))
-                        instructions.append((OP_JUMP, None, -1, None))
+                        top["exit_jumps"] += [len(instructions)]
+                        instructions += [(OP_JUMP, None, -1, None)]
                         _build_alt_tree(instructions, top)
 
                     for jump_idx in top["exit_jumps"]:
@@ -489,7 +491,7 @@ def _compile_regex(pattern, start_group_id = 0):
 
                     # Only emit SAVE if it was a capturing group
                     if top["is_capturing"]:
-                        instructions.append((OP_SAVE, top["gid"] * 2 + 1, None, None))
+                        instructions += [(OP_SAVE, top["gid"] * 2 + 1, None, None)]
 
                     start_pc_fix = top["start_pc"]
 
@@ -501,29 +503,29 @@ def _compile_regex(pattern, start_group_id = 0):
         elif char == "|":
             if stack:
                 group_ctx = stack[-1]
-                group_ctx["exit_jumps"].append(len(instructions))
-                instructions.append((OP_JUMP, None, -1, None))
-                group_ctx["branch_starts"].append(len(instructions))
+                group_ctx["exit_jumps"] += [len(instructions)]
+                instructions += [(OP_JUMP, None, -1, None)]
+                group_ctx["branch_starts"] += [len(instructions)]
             else:
                 # Should not happen with root group
-                instructions.append((OP_CHAR, char, None, None))
+                instructions += [(OP_CHAR, char, None, None)]
 
         elif char == ".":
             if dot_all:
-                instructions.append((OP_ANY, None, None, None))  # ANY (includes \n)
+                instructions += [(OP_ANY, None, None, None)]  # ANY (includes \n
             else:
-                instructions.append((OP_ANY_NO_NL, None, None, None))  # ANY_NO_NL (excludes \n)
+                instructions += [(OP_ANY_NO_NL, None, None, None)]  # ANY_NO_NL (excludes \n
             i = _handle_quantifier(pattern, i, instructions, ungreedy = ungreedy)
 
         elif char == "\\":
             if i + 1 < pattern_len:
                 next_c = pattern[i + 1]
                 if next_c == "A":
-                    instructions.append((OP_ANCHOR_START, None, None, None))
+                    instructions += [(OP_ANCHOR_START, None, None, None)]
                     i += 2
                     continue
                 elif next_c == "z":
-                    instructions.append((OP_ANCHOR_END, None, None, None))
+                    instructions += [(OP_ANCHOR_END, None, None, None)]
                     i += 2
                     continue
                 elif next_c == "Q":
@@ -535,9 +537,9 @@ def _compile_regex(pattern, start_group_id = 0):
                             # Match everything from i to k as literal
                             for j in range(i, k):
                                 if case_insensitive:
-                                    instructions.append((OP_CHAR_I, pattern[j].lower(), None, None))
+                                    instructions += [(OP_CHAR_I, pattern[j].lower(), None, None)]
                                 else:
-                                    instructions.append((OP_CHAR, pattern[j], None, None))
+                                    instructions += [(OP_CHAR, pattern[j], None, None)]
                             i = k + 2  # Skip \E
                             found_e = True
                             break
@@ -545,9 +547,9 @@ def _compile_regex(pattern, start_group_id = 0):
                         # Match to end
                         for j in range(i, pattern_len):
                             if case_insensitive:
-                                instructions.append((OP_CHAR_I, pattern[j].lower(), None, None))
+                                instructions += [(OP_CHAR_I, pattern[j].lower(), None, None)]
                             else:
-                                instructions.append((OP_CHAR, pattern[j], None, None))
+                                instructions += [(OP_CHAR, pattern[j], None, None)]
                         i = pattern_len
                     continue
 
@@ -559,11 +561,11 @@ def _compile_regex(pattern, start_group_id = 0):
                 predef = _get_predefined_class(next_c)
                 if predef:
                     # predef is (list, is_negated)
-                    instructions.append((OP_SET, predef, None, None))
+                    instructions += [(OP_SET, predef, None, None)]
                 elif next_c == "b":
-                    instructions.append((OP_WORD_BOUNDARY, None, None, None))
+                    instructions += [(OP_WORD_BOUNDARY, None, None, None)]
                 elif next_c == "B":
-                    instructions.append((OP_NOT_WORD_BOUNDARY, None, None, None))
+                    instructions += [(OP_NOT_WORD_BOUNDARY, None, None, None)]
                 else:
                     # Handle escapes
                     char, new_i = _parse_escape(pattern, i, pattern_len)
@@ -572,16 +574,16 @@ def _compile_regex(pattern, start_group_id = 0):
                     if case_insensitive:
                         if char:
                             char = char.lower()
-                        instructions.append((OP_CHAR_I, char, None, None))
+                        instructions += [(OP_CHAR_I, char, None, None)]
                     else:
-                        instructions.append((OP_CHAR, char, None, None))
+                        instructions += [(OP_CHAR, char, None, None)]
                 i = _handle_quantifier(pattern, i, instructions, ungreedy = ungreedy)
 
         else:
             if case_insensitive:
-                instructions.append((OP_CHAR_I, char.lower(), None, None))
+                instructions += [(OP_CHAR_I, char.lower(), None, None)]
             else:
-                instructions.append((OP_CHAR, char, None, None))
+                instructions += [(OP_CHAR, char, None, None)]
             i = _handle_quantifier(pattern, i, instructions, ungreedy = ungreedy)
 
         i += 1
@@ -591,25 +593,26 @@ def _compile_regex(pattern, start_group_id = 0):
         root = stack.pop()
         if root["type"] == "root":
             if len(root["branch_starts"]) > 1:
-                root["exit_jumps"].append(len(instructions))
-                instructions.append((OP_JUMP, None, -1, None))
+                root["exit_jumps"] += [len(instructions)]
+                instructions += [(OP_JUMP, None, -1, None)]
                 _build_alt_tree(instructions, root)
                 for jump_idx in root["exit_jumps"]:
                     instructions[jump_idx] = (OP_JUMP, None, len(instructions), None)
 
     # Save group 0 end and match
-    instructions.append((OP_SAVE, 1, None, None))
-    instructions.append((OP_MATCH, None, None, None))
+    instructions += [(OP_SAVE, 1, None, None)]
+    instructions += [(OP_MATCH, None, None, None)]
 
     return instructions, named_groups, group_count
 
+# buildifier: disable=list-append
 def _build_alt_tree(instructions, group_ctx):
     branches = group_ctx["branch_starts"]
     entry_pc = branches[0]
     orig_inst = instructions[entry_pc]
     relocated_pc = len(instructions)
-    instructions.append(orig_inst)
-    instructions.append((OP_JUMP, None, entry_pc + 1, None))
+    instructions += [orig_inst]
+    instructions += [(OP_JUMP, None, entry_pc + 1, None)]
 
     tree_start_pc = len(instructions)
     current_branches = list(branches)
@@ -618,12 +621,13 @@ def _build_alt_tree(instructions, group_ctx):
     for j in range(len(current_branches) - 1):
         if j < len(current_branches) - 2:
             next_split = len(instructions) + 1
-            instructions.append((OP_SPLIT, None, current_branches[j], next_split))
+            instructions += [(OP_SPLIT, None, current_branches[j], next_split)]
         else:
-            instructions.append((OP_SPLIT, None, current_branches[j], current_branches[-1]))
+            instructions += [(OP_SPLIT, None, current_branches[j], current_branches[-1])]
 
     instructions[entry_pc] = (OP_JUMP, None, tree_start_pc, None)
 
+# buildifier: disable=list-append
 def _copy_insts(insts, atom_start, new_start):
     """Copies instructions from atom_start to end, shifting jumps."""
     delta = new_start - atom_start
@@ -638,19 +642,20 @@ def _copy_insts(insts, atom_start, new_start):
             pc1 += delta
         if pc2 != None and pc2 >= atom_start:
             pc2 += delta
-        new_block.append((code, val, pc1, pc2))
+        new_block += [(code, val, pc1, pc2)]
 
     return new_block
 
+# buildifier: disable=list-append
 def _apply_question_mark(insts, atom_start, lazy = False):
     """Applies ? logic. Lazy=True tries skipping first."""
     jump_to_end_idx = len(insts)
-    insts.append((OP_JUMP, None, -1, None))
+    insts += [(OP_JUMP, None, -1, None)]
     orig_first = insts[atom_start]
     reloc_idx = len(insts)
-    insts.append(orig_first)
+    insts += [orig_first]
     if atom_start + 1 < jump_to_end_idx:
-        insts.append((OP_JUMP, None, atom_start + 1, None))
+        insts += [(OP_JUMP, None, atom_start + 1, None)]
     skip_target = len(insts)
 
     # Greedy: Try reloc (match) then skip. Lazy: Try skip then reloc.
@@ -660,14 +665,15 @@ def _apply_question_mark(insts, atom_start, lazy = False):
         insts[atom_start] = (OP_SPLIT, None, reloc_idx, skip_target)
     insts[jump_to_end_idx] = (OP_JUMP, None, skip_target, None)
 
+# buildifier: disable=list-append
 def _apply_star(insts, atom_start, lazy = False):
     """Applies * logic. Lazy=True tries skipping first."""
     orig_first = insts[atom_start]
     reloc_idx = len(insts)
-    insts.append(orig_first)
+    insts += [orig_first]
     if len(insts) - 1 > atom_start + 1:
-        insts.append((3, None, atom_start + 1, None))
-    insts.append((OP_JUMP, None, atom_start, None))
+        insts += [(3, None, atom_start + 1, None)]
+    insts += [(OP_JUMP, None, atom_start, None)]
     skip_target = len(insts)
 
     # Greedy: Try reloc (loop) then skip. Lazy: Try skip then reloc.
@@ -676,6 +682,7 @@ def _apply_star(insts, atom_start, lazy = False):
     else:
         insts[atom_start] = (OP_SPLIT, None, reloc_idx, skip_target)
 
+# buildifier: disable=list-append
 def _apply_plus(insts, atom_start, lazy = False):
     """Applies + logic. Lazy=True tries exit first."""
 
@@ -683,10 +690,11 @@ def _apply_plus(insts, atom_start, lazy = False):
     # Lazy: atom -> SPLIT(next, atom_start)
     next_pc = len(insts) + 1
     if lazy:
-        insts.append((OP_SPLIT, None, next_pc, atom_start))
+        insts += [(OP_SPLIT, None, next_pc, atom_start)]
     else:
-        insts.append((OP_SPLIT, None, atom_start, next_pc))
+        insts += [(OP_SPLIT, None, atom_start, next_pc)]
 
+# buildifier: disable=list-append
 def _handle_quantifier(pattern, i, insts, atom_start = -1, ungreedy = False):
     if atom_start == -1:
         atom_start = len(insts) - 1
@@ -758,7 +766,7 @@ def _handle_quantifier(pattern, i, insts, atom_start = -1, ungreedy = False):
                             pc1 += delta
                         if pc2 != None and pc2 >= atom_start:
                             pc2 += delta
-                        insts.append((code, val, pc1, pc2))
+                        insts += [(code, val, pc1, pc2)]
 
                 # Expand Max
                 if max_rep == -1:
@@ -770,7 +778,7 @@ def _handle_quantifier(pattern, i, insts, atom_start = -1, ungreedy = False):
                             pc1 += delta
                         if pc2 != None and pc2 >= atom_start:
                             pc2 += delta
-                        insts.append((code, val, pc1, pc2))
+                        insts += [(code, val, pc1, pc2)]
                     _apply_star(insts, block_start, lazy = is_lazy)
 
                 elif max_rep > min_rep:
@@ -783,7 +791,7 @@ def _handle_quantifier(pattern, i, insts, atom_start = -1, ungreedy = False):
                                 pc1 += delta
                             if pc2 != None and pc2 >= atom_start:
                                 pc2 += delta
-                            insts.append((code, val, pc1, pc2))
+                            insts += [(code, val, pc1, pc2)]
                         _apply_question_mark(insts, block_start, lazy = is_lazy)
 
                 return final_i
@@ -810,6 +818,7 @@ def _handle_quantifier(pattern, i, insts, atom_start = -1, ungreedy = False):
     else:
         return i
 
+# buildifier: disable=list-append
 def _get_epsilon_closure(instructions, input_str, input_len, start_pc, start_regs, current_idx):
     reachable = []
     stack = [(start_pc, start_regs)]
@@ -834,10 +843,10 @@ def _get_epsilon_closure(instructions, input_str, input_len, start_pc, start_reg
         itype = inst[0]
 
         if itype == OP_SPLIT:
-            stack.append((inst[3], list(regs)))
-            stack.append((inst[2], list(regs)))
+            stack += [(inst[3], list(regs))]
+            stack += [(inst[2], list(regs))]
         elif itype == OP_JUMP:
-            stack.append((inst[2], list(regs)))
+            stack += [(inst[2], list(regs))]
         elif itype == OP_SAVE:
             new_regs = list(regs)
             reg_idx = inst[1]
@@ -846,13 +855,13 @@ def _get_epsilon_closure(instructions, input_str, input_len, start_pc, start_reg
             # If it's a group end (odd index) and not group 0, track it as lastindex
             if reg_idx > 1 and reg_idx % 2 == 1:
                 new_regs[-1] = reg_idx // 2
-            stack.append((pc + 1, new_regs))
+            stack += [(pc + 1, new_regs)]
         elif itype == OP_ANCHOR_START:
             if current_idx == 0:
-                stack.append((pc + 1, list(regs)))
+                stack += [(pc + 1, list(regs))]
         elif itype == OP_ANCHOR_END:
             if current_idx == input_len:
-                stack.append((pc + 1, list(regs)))
+                stack += [(pc + 1, list(regs))]
         elif itype == OP_WORD_BOUNDARY:
             is_prev_word = False
             if current_idx > 0:
@@ -861,7 +870,7 @@ def _get_epsilon_closure(instructions, input_str, input_len, start_pc, start_reg
             if current_idx < input_len:
                 is_curr_word = _is_word_char(input_str[current_idx])
             if is_prev_word != is_curr_word:
-                stack.append((pc + 1, list(regs)))
+                stack += [(pc + 1, list(regs))]
         elif itype == OP_NOT_WORD_BOUNDARY:
             is_prev_word = False
             if current_idx > 0:
@@ -870,7 +879,7 @@ def _get_epsilon_closure(instructions, input_str, input_len, start_pc, start_reg
             if current_idx < input_len:
                 is_curr_word = _is_word_char(input_str[current_idx])
             if is_prev_word == is_curr_word:
-                stack.append((pc + 1, list(regs)))
+                stack += [(pc + 1, list(regs))]
         elif itype == OP_ANCHOR_LINE_START:
             matched = False
             if current_idx == 0:
@@ -878,7 +887,7 @@ def _get_epsilon_closure(instructions, input_str, input_len, start_pc, start_reg
             elif current_idx > 0 and input_str[current_idx - 1] == "\n":
                 matched = True
             if matched:
-                stack.append((pc + 1, list(regs)))
+                stack += [(pc + 1, list(regs))]
         elif itype == OP_ANCHOR_LINE_END:
             matched = False
             if current_idx == input_len:
@@ -886,9 +895,9 @@ def _get_epsilon_closure(instructions, input_str, input_len, start_pc, start_reg
             elif current_idx < input_len and input_str[current_idx] == "\n":
                 matched = True
             if matched:
-                stack.append((pc + 1, list(regs)))
+                stack += [(pc + 1, list(regs))]
         else:
-            reachable.append((pc, regs))
+            reachable += [(pc, regs)]
 
     return reachable
 
@@ -956,6 +965,7 @@ def _check_simple_match(inst, char, char_lower):
         return (in_set != is_negated)
     return False
 
+# buildifier: disable=list-append
 def _process_batch(instructions, batch, char, char_lower, char_idx, input_str, input_len):
     next_threads_dict = {}
     match_regs = None
@@ -989,10 +999,11 @@ def _process_batch(instructions, batch, char, char_lower, char_idx, input_str, i
     # Dictionaries in Starlark (and Python 3.7+) preserve insertion order.
     next_threads = []
     for pc, regs in next_threads_dict.items():
-        next_threads.append((pc, regs))
+        next_threads += [(pc, regs)]
 
     return next_threads, match_regs
 
+# buildifier: disable=list-append
 def _execute_core(instructions, input_str, num_regs, start_index = 0, initial_regs = None, anchored = False):
     if initial_regs == None:
         initial_regs = [-1] * (num_regs + 1)  # +1 for lastindex
@@ -1034,7 +1045,7 @@ def _execute_core(instructions, input_str, num_regs, start_index = 0, initial_re
             # Rebuild current_threads
             current_threads = []
             for pc, regs in threads_dict.items():
-                current_threads.append((pc, regs))
+                current_threads += [(pc, regs)]
 
         # Process current threads against character
         next_threads, batch_match = _process_batch(
@@ -1303,6 +1314,7 @@ def fullmatch(pattern, text):
 
     return _MatchObject(text, regs, compiled, 0, len(text))
 
+# buildifier: disable=list-append
 def findall(pattern, text):
     """Return all non-overlapping matches of pattern in string, as a list of strings.
 
@@ -1345,7 +1357,7 @@ def findall(pattern, text):
 
         # Extract result
         if group_count == 0:
-            matches.append(text[match_start:match_end])
+            matches += [text[match_start:match_end]]
         else:
             # Return groups
             groups = []
@@ -1353,13 +1365,13 @@ def findall(pattern, text):
                 g_start = regs[i * 2]
                 g_end = regs[i * 2 + 1]
                 if g_start != -1 and g_end != -1:
-                    groups.append(text[g_start:g_end])
+                    groups += [text[g_start:g_end]]
                 else:
-                    groups.append(None)
+                    groups += [None]
 
             # Starlark doesn't have tuples in the same way, return tuple-like list or tuple
             # Using tuple() to match Python behavior closer if possible, or just list
-            matches.append(tuple(groups))
+            matches += [tuple(groups)]
 
         # Advance start_index
         if match_end > match_start:
@@ -1373,6 +1385,7 @@ def findall(pattern, text):
 
     return matches
 
+# buildifier: disable=list-append
 def _MatchObject(text, regs, compiled, pos, endpos):
     """Constructs a match object with methods.
 
@@ -1400,9 +1413,9 @@ def _MatchObject(text, regs, compiled, pos, endpos):
             start = regs[i * 2]
             end = regs[i * 2 + 1]
             if start == -1 or end == -1:
-                res.append(default)
+                res += [default]
             else:
-                res.append(text[start:end])
+                res += [text[start:end]]
         return tuple(res)
 
     def span(n = 0):
@@ -1439,6 +1452,7 @@ def _MatchObject(text, regs, compiled, pos, endpos):
         lastgroup = lastgroup,
     )
 
+# buildifier: disable=list-append
 def sub(pattern, repl, text, count = 0):
     """Return the string obtained by replacing the leftmost non-overlapping occurrences of the pattern in text by the replacement repl.
 
@@ -1490,7 +1504,7 @@ def sub(pattern, repl, text, count = 0):
             break
 
         # Append text before match
-        res_parts.append(text[last_idx:match_start])
+        res_parts += [text[last_idx:match_start]]
 
         # Calculate replacement
         match_str = text[match_start:match_end]
@@ -1500,9 +1514,9 @@ def sub(pattern, repl, text, count = 0):
             g_start = regs[i * 2]
             g_end = regs[i * 2 + 1]
             if g_start != -1 and g_end != -1:
-                groups.append(text[g_start:g_end])
+                groups += [text[g_start:g_end]]
             else:
-                groups.append(None)
+                groups += [None]
 
         if type(repl) == "function":
             # Pass a match object (dict with methods)
@@ -1511,7 +1525,7 @@ def sub(pattern, repl, text, count = 0):
         else:
             replacement = _expand_replacement(repl, match_str, groups, compiled.named_groups)
 
-        res_parts.append(replacement)
+        res_parts += [replacement]
 
         last_idx = match_end
         matches_found += 1
@@ -1525,9 +1539,10 @@ def sub(pattern, repl, text, count = 0):
         if start_index > text_len:
             break
 
-    res_parts.append(text[last_idx:])
+    res_parts += [text[last_idx:]]
     return "".join(res_parts)
 
+# buildifier: disable=list-append
 def split(pattern, text, maxsplit = 0):
     """Split the source string by the occurrences of the pattern, returning a list containing the resulting substrings.
 
@@ -1572,7 +1587,7 @@ def split(pattern, text, maxsplit = 0):
             break
 
         # Append text before match
-        res_parts.append(text[last_idx:match_start])
+        res_parts += [text[last_idx:match_start]]
 
         # If capturing groups, append them too (Python behavior)
         if group_count > 0:
@@ -1580,9 +1595,9 @@ def split(pattern, text, maxsplit = 0):
                 g_start = regs[i * 2]
                 g_end = regs[i * 2 + 1]
                 if g_start != -1 and g_end != -1:
-                    res_parts.append(text[g_start:g_end])
+                    res_parts += [text[g_start:g_end]]
                 else:
-                    res_parts.append(None)
+                    res_parts += [None]
 
         last_idx = match_end
         splits += 1
@@ -1596,5 +1611,5 @@ def split(pattern, text, maxsplit = 0):
         if start_index > text_len:
             break
 
-    res_parts.append(text[last_idx:])
+    res_parts += [text[last_idx:]]
     return res_parts
