@@ -2,9 +2,17 @@
 Tests for core regex functionality.
 """
 
-load("tests/utils.star", "run_suite")
+load("@bazel_skylib//lib:unittest.bzl", "unittest")
+load("//lib/tests:utils.bzl", "run_suite")
 
-def run_tests_core():
+def _test_core_impl(ctx):
+    env = unittest.begin(ctx)
+    run_tests_core(env)
+    return unittest.end(env)
+
+core_test = unittest.make(_test_core_impl)
+
+def run_tests_core(env):
     """Runs core tests."""
     cases = [
         # 4. Core functionality
@@ -41,4 +49,4 @@ def run_tests_core():
         # Stress Tests: Long Literal
         ("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789", "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789", {0: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"}),
     ]
-    run_suite("Core Tests", cases)
+    run_suite(env, "Core Tests", cases)

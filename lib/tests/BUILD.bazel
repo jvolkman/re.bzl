@@ -1,0 +1,32 @@
+load("//lib/tests:test_anchors_flags.bzl", "anchors_flags_test")
+load("//lib/tests:test_api.bzl", "api_test")
+load("//lib/tests:test_core.bzl", "core_test")
+load("//lib/tests:test_escape.bzl", "escape_test")
+load("//lib/tests:test_groups.bzl", "groups_test")
+load("//lib/tests:test_quantifiers.bzl", "quantifiers_test")
+
+package(default_visibility = ["//visibility:public"])
+
+anchors_flags_test(name = "anchors_flags_test")
+
+api_test(name = "api_test")
+
+core_test(name = "core_test")
+
+escape_test(name = "escape_test")
+
+groups_test(name = "groups_test")
+
+quantifiers_test(name = "quantifiers_test")
+
+test_suite(
+    name = "all_tests",
+    tests = [
+        ":anchors_flags_test",
+        ":api_test",
+        ":core_test",
+        ":escape_test",
+        ":groups_test",
+        ":quantifiers_test",
+    ],
+)

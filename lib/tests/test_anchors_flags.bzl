@@ -2,9 +2,17 @@
 Tests for regex anchors and flags.
 """
 
-load("tests/utils.star", "run_suite")
+load("@bazel_skylib//lib:unittest.bzl", "unittest")
+load("//lib/tests:utils.bzl", "run_suite")
 
-def run_tests_anchors_flags():
+def _test_anchors_flags_impl(ctx):
+    env = unittest.begin(ctx)
+    run_tests_anchors_flags(env)
+    return unittest.end(env)
+
+anchors_flags_test = unittest.make(_test_anchors_flags_impl)
+
+def run_tests_anchors_flags(env):
     """Runs anchors and flags tests."""
     cases = [
         # 10. Anchors
@@ -57,4 +65,4 @@ def run_tests_anchors_flags():
         ("(?i:a(?m:b(?s:c(?U:d*))))", "Abcd", {0: "Abc"}),
         ("(?i:A(?m:B(?s:C(?U:D*))))", "abcd", {0: "abc"}),
     ]
-    run_suite("Anchors & Flags Tests", cases)
+    run_suite(env, "Anchors & Flags Tests", cases)

@@ -1081,6 +1081,40 @@ def _expand_replacement(repl, match_str, groups, named_groups = {}):
         res += c
     return res
 
+def _extract_results(text, regs, named_groups):
+    results = {}
+    for i in range(0, len(regs), 2):
+        start = regs[i]
+        end = regs[i + 1]
+        if start != -1 and end != -1:
+            results[i // 2] = text[start:end]
+
+    for name, gid in named_groups.items():
+        if gid in results:
+            results[name] = results[gid]
+
+    return results
+
+def _search_bytecode(bytecode, text, named_groups, group_count):
+    num_regs = (group_count + 1) * 2
+    regs = _execute(bytecode, text, num_regs, anchored = False)
+    if not regs:
+        return None
+    return _extract_results(text, regs, named_groups)
+
+def _match_bytecode(bytecode, text, named_groups, group_count):
+    num_regs = (group_count + 1) * 2
+    regs = _execute(bytecode, text, num_regs, anchored = True)
+    if not regs:
+        return None
+    return _extract_results(text, regs, named_groups)
+
+def _fullmatch_bytecode(bytecode, text, named_groups, group_count):
+    res = _match_bytecode(bytecode, text, named_groups, group_count)
+    if res and len(res[0]) == len(text):
+        return res
+    return None
+
 def compile(pattern):
     """Compiles a regex pattern into a reusable object.
 
@@ -1088,15 +1122,28 @@ def compile(pattern):
       pattern: The regex pattern string.
 
     Returns:
-      A dictionary containing the compiled bytecode and metadata.
+      A struct containing the compiled bytecode and methods.
     """
     bytecode, named_groups, group_count = _compile_regex(pattern)
-    return {
-        "bytecode": bytecode,
-        "named_groups": named_groups,
-        "group_count": group_count,
-        "pattern": pattern,
-    }
+
+    def _search(text):
+        return _search_bytecode(bytecode, text, named_groups, group_count)
+
+    def _match(text):
+        return _match_bytecode(bytecode, text, named_groups, group_count)
+
+    def _fullmatch(text):
+        return _fullmatch_bytecode(bytecode, text, named_groups, group_count)
+
+    return struct(
+        search = _search,
+        match = _match,
+        fullmatch = _fullmatch,
+        bytecode = bytecode,
+        named_groups = named_groups,
+        group_count = group_count,
+        pattern = pattern,
+    )
 
 def search(pattern, text):
     """Scan through string looking for the first location where the regex pattern produces a match.
@@ -1112,29 +1159,12 @@ def search(pattern, text):
     if type(pattern) == "string":
         bytecode, named_groups, group_count = _compile_regex(pattern)
     else:
-        # Assume it's a compiled regex object (dict)
-        bytecode = pattern["bytecode"]
-        named_groups = pattern["named_groups"]
-        group_count = pattern["group_count"]
+        # Assume it's a compiled regex object (struct)
+        bytecode = pattern.bytecode
+        named_groups = pattern.named_groups
+        group_count = pattern.group_count
 
-    # Calculate number of registers needed (2 per group + 2 for whole match)
-    num_regs = (group_count + 1) * 2
-
-    regs = _execute(bytecode, text, num_regs, anchored = False)
-    if not regs:
-        return None
-    results = {}
-    for i in range(0, len(regs), 2):
-        start = regs[i]
-        end = regs[i + 1]
-        if start != -1 and end != -1:
-            results[i // 2] = text[start:end]
-
-    for name, gid in named_groups.items():
-        if gid in results:
-            results[name] = results[gid]
-
-    return results
+    return _search_bytecode(bytecode, text, named_groups, group_count)
 
 def match(pattern, text):
     """Try to apply the pattern at the start of the string.
@@ -1150,29 +1180,12 @@ def match(pattern, text):
     if type(pattern) == "string":
         bytecode, named_groups, group_count = _compile_regex(pattern)
     else:
-        # Assume it's a compiled regex object (dict)
-        bytecode = pattern["bytecode"]
-        named_groups = pattern["named_groups"]
-        group_count = pattern["group_count"]
+        # Assume it's a compiled regex object (struct)
+        bytecode = pattern.bytecode
+        named_groups = pattern.named_groups
+        group_count = pattern.group_count
 
-    # Calculate number of registers needed (2 per group + 2 for whole match)
-    num_regs = (group_count + 1) * 2
-
-    regs = _execute(bytecode, text, num_regs, anchored = True)
-    if not regs:
-        return None
-    results = {}
-    for i in range(0, len(regs), 2):
-        start = regs[i]
-        end = regs[i + 1]
-        if start != -1 and end != -1:
-            results[i // 2] = text[start:end]
-
-    for name, gid in named_groups.items():
-        if gid in results:
-            results[name] = results[gid]
-
-    return results
+    return _match_bytecode(bytecode, text, named_groups, group_count)
 
 def fullmatch(pattern, text):
     """Try to apply the pattern to the entire string.
@@ -1185,10 +1198,15 @@ def fullmatch(pattern, text):
       A dictionary containing the match results (group ID/name -> matched string),
       or None if no match was found.
     """
-    res = match(pattern, text)
-    if res and len(res[0]) == len(text):
-        return res
-    return None
+    if type(pattern) == "string":
+        bytecode, named_groups, group_count = _compile_regex(pattern)
+    else:
+        # Assume it's a compiled regex object (struct)
+        bytecode = pattern.bytecode
+        named_groups = pattern.named_groups
+        group_count = pattern.group_count
+
+    return _fullmatch_bytecode(bytecode, text, named_groups, group_count)
 
 def findall(pattern, text):
     """Return all non-overlapping matches of pattern in string, as a list of strings.
@@ -1208,8 +1226,8 @@ def findall(pattern, text):
     else:
         compiled = pattern
 
-    bytecode = compiled["bytecode"]
-    group_count = compiled["group_count"]
+    bytecode = compiled.bytecode
+    group_count = compiled.group_count
     num_regs = (group_count + 1) * 2
 
     matches = []
@@ -1291,17 +1309,17 @@ def _MatchObject(text, regs, compiled, pos, endpos):
             fail("IndexError: no such group")
         return (regs[n * 2], regs[n * 2 + 1])
 
-    return {
-        "group": group,
-        "groups": groups,
-        "span": span,
-        "string": text,
-        "re": compiled,
-        "pos": pos,
-        "endpos": endpos,
-        "lastindex": None,  # TODO: Track last capturing group
-        "lastgroup": None,  # TODO: Track last capturing group name
-    }
+    return struct(
+        group = group,
+        groups = groups,
+        span = span,
+        string = text,
+        re = compiled,
+        pos = pos,
+        endpos = endpos,
+        lastindex = None,  # TODO: Track last capturing group
+        lastgroup = None,  # TODO: Track last capturing group name
+    )
 
 def sub(pattern, repl, text, count = 0):
     """Return the string obtained by replacing the leftmost non-overlapping occurrences of the pattern in text by the replacement repl.
@@ -1328,8 +1346,8 @@ def sub(pattern, repl, text, count = 0):
     # So we duplicate the loop here or refactor findall to return match objects.
     # Let's duplicate loop for now to avoid breaking findall API.
 
-    bytecode = compiled["bytecode"]
-    group_count = compiled["group_count"]
+    bytecode = compiled.bytecode
+    group_count = compiled.group_count
     num_regs = (group_count + 1) * 2
 
     res_parts = []
@@ -1373,7 +1391,7 @@ def sub(pattern, repl, text, count = 0):
             match_obj = _MatchObject(text, regs, compiled, match_start, match_end)
             replacement = repl(match_obj)
         else:
-            replacement = _expand_replacement(repl, match_str, groups, compiled["named_groups"])
+            replacement = _expand_replacement(repl, match_str, groups, compiled.named_groups)
 
         res_parts.append(replacement)
 
@@ -1410,8 +1428,8 @@ def split(pattern, text, maxsplit = 0):
     else:
         compiled = pattern
 
-    bytecode = compiled["bytecode"]
-    group_count = compiled["group_count"]
+    bytecode = compiled.bytecode
+    group_count = compiled.group_count
     num_regs = (group_count + 1) * 2
 
     res_parts = []

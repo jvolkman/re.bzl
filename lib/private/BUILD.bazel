@@ -1,0 +1,3 @@
+exports_files(["re.bzl"])
+
+package(default_visibility = ["//lib:__subpackages__"])

@@ -2,9 +2,17 @@
 Tests for regex quantifiers.
 """
 
-load("tests/utils.star", "run_suite")
+load("@bazel_skylib//lib:unittest.bzl", "unittest")
+load("//lib/tests:utils.bzl", "run_suite")
 
-def run_tests_quantifiers():
+def _test_quantifiers_impl(ctx):
+    env = unittest.begin(ctx)
+    run_tests_quantifiers(env)
+    return unittest.end(env)
+
+quantifiers_test = unittest.make(_test_quantifiers_impl)
+
+def run_tests_quantifiers(env):
     """Runs quantifier tests."""
     cases = [
         # 2. Lazy vs Greedy in Context
@@ -43,4 +51,4 @@ def run_tests_quantifiers():
         # Stress Tests: Backtracking Stress (NFA should handle)
         ("a?a?a?a?a?a?a?a?a?a?aaaaaaaaaa", "aaaaaaaaaa", {0: "aaaaaaaaaa"}),
     ]
-    run_suite("Quantifier Tests", cases)
+    run_suite(env, "Quantifier Tests", cases)
