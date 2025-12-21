@@ -1,0 +1,7 @@
+load("//lib/benchmarks:benchmark_test.bzl", "benchmark_test")
+
+package(default_visibility = ["//visibility:public"])
+
+benchmark_test(
+    name = "benchmark_test",
+)

@@ -1,13 +1,13 @@
 """A Thompson NFA-based Regex Engine implemented in Starlark.
 
 Supports a significant subset of RE2 syntax:
-- Single-character: Literals, ., \d, \D, \s, \S, \w, \W, [[:class:]]
+- Single-character: Literals, ., \\d, \\D, \\s, \\S, \\w, \\W, [[:class:]]
 - Composites: xy, x|y
 - Repetitions: x*, x+, x?, x{n,m}, x{n,}, x{n} (Greedy and Lazy)
 - Grouping: (re), (?P<name>re), (?:re), (?flags), (?flags:re)
-- Anchors: ^, $, \A, \z, \b, \B
+- Anchors: ^, $, \\A, \\z, \\b, \\B
 - Flags: i (case-insensitive), m (multi-line), s (dot-all), U (ungreedy)
-- Escapes: \n, \r, \t, \f, \v, \a, \xHH, \x{h...h}, \OOO, \Q...\E
+- Escapes: \\n, \\r, \\t, \\f, \\v, \\a, \\xHH, \\x{h...h}, \\OOO, \\Q...\\E
 
 API Functions:
 - compile(pattern): Compiles a regex pattern into a reusable object.
@@ -815,11 +815,9 @@ def _get_epsilon_closure(instructions, input_str, input_len, start_pc, start_reg
     stack = [(start_pc, start_regs)]
     visited = {}
 
-    # Heuristic limit for epsilon closure. Starlark requires bounded loops.
-    # This factor allows for complex closures (visiting instructions multiple times
-    # with different registers) while preventing pathological cases from exceeding
-    # O(M) work per character.
-    limit = len(instructions) * MAX_EPSILON_VISITS_FACTOR
+    # Standard NFA epsilon closure: each PC is visited at most once.
+    # The first time we reach a PC, it's via the highest priority path.
+    limit = len(instructions) + 10
 
     for _ in range(limit):
         if not stack:
@@ -828,10 +826,9 @@ def _get_epsilon_closure(instructions, input_str, input_len, start_pc, start_reg
         if pc >= len(instructions) or pc < 0:
             continue
 
-        state_key = "%d_%s" % (pc, ",".join([str(x) for x in regs]))
-        if state_key in visited:
+        if pc in visited:
             continue
-        visited[state_key] = True
+        visited[pc] = True
 
         inst = instructions[pc]
         itype = inst[0]
@@ -960,7 +957,7 @@ def _check_simple_match(inst, char, char_lower):
     return False
 
 def _process_batch(instructions, batch, char, char_lower, char_idx, input_str, input_len):
-    next_threads = []
+    next_threads_dict = {}
     match_regs = None
 
     for pc, regs in batch:
@@ -970,6 +967,9 @@ def _process_batch(instructions, batch, char, char_lower, char_idx, input_str, i
         if itype == OP_MATCH:
             if match_regs == None:
                 match_regs = regs
+
+            # Any thread after this one in the batch has lower priority.
+            # Since we found a match, we can stop processing lower priority threads.
             break
 
         if char == None:
@@ -982,7 +982,15 @@ def _process_batch(instructions, batch, char, char_lower, char_idx, input_str, i
         if match_found:
             closure = _get_epsilon_closure(instructions, input_str, input_len, pc + 1, regs, char_idx + 1)
             for c_pc, c_regs in closure:
-                next_threads.append((c_pc, c_regs))
+                if c_pc not in next_threads_dict:
+                    next_threads_dict[c_pc] = c_regs
+
+    # Convert dict back to list of (pc, regs)
+    # Dictionaries in Starlark (and Python 3.7+) preserve insertion order.
+    next_threads = []
+    for pc, regs in next_threads_dict.items():
+        next_threads.append((pc, regs))
+
     return next_threads, match_regs
 
 def _execute_core(instructions, input_str, num_regs, start_index = 0, initial_regs = None, anchored = False):
@@ -1013,8 +1021,20 @@ def _execute_core(instructions, input_str, num_regs, start_index = 0, initial_re
         # Unanchored Search Injection
         if not anchored and char_idx <= input_len:
             start_closure = _get_epsilon_closure(instructions, input_str, input_len, 0, initial_regs, char_idx)
-            for t in start_closure:
-                current_threads.append(t)
+
+            # Deduplicate by PC, preserving existing threads (higher priority)
+            threads_dict = {}
+            for pc, regs in current_threads:
+                threads_dict[pc] = regs
+
+            for pc, regs in start_closure:
+                if pc not in threads_dict:
+                    threads_dict[pc] = regs
+
+            # Rebuild current_threads
+            current_threads = []
+            for pc, regs in threads_dict.items():
+                current_threads.append((pc, regs))
 
         # Process current threads against character
         next_threads, batch_match = _process_batch(
@@ -1028,21 +1048,29 @@ def _execute_core(instructions, input_str, num_regs, start_index = 0, initial_re
         )
 
         if batch_match:
-            # Prefer longer matches (greedy)
+            # Leftmost-longest matching:
+            # 1. Prefer earlier start position (leftmost).
+            # 2. For same start position, prefer later match (longest).
             if match_regs == None:
                 match_regs = batch_match
             else:
-                # Standard greedy behavior: prefer longer matches (which appear later in the loop)
-                match_regs = batch_match
+                # regs[0] is the start of the match
+                if batch_match[0] <= match_regs[0]:
+                    match_regs = batch_match
 
         current_threads = next_threads
 
-        # Optimization: If no threads left, break
-        if not current_threads and match_regs:
-            break
-
-        if not current_threads and not match_regs and char_idx > input_len:
-            break
+        # Optimization: If no threads left, we can stop.
+        # But only if we are not doing unanchored search (which might inject more threads later).
+        # Actually, if we are doing unanchored search, we only stop if we have a match
+        # and no threads starting at or before that match's start are alive.
+        if not current_threads:
+            if match_regs:
+                # If we have a match, and no threads are alive, we are done.
+                # (Any new threads injected later would start later, so they'd be lower priority).
+                break
+            if anchored:
+                break
 
     return match_regs
 
