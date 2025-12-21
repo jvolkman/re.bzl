@@ -52,5 +52,9 @@ def run_tests_anchors_flags():
         ("(?U)a+?", "aaa", {0: "aaa"}),
         ("(?U)a{1,3}", "aaa", {0: "a"}),
         ("(?U:a*)b", "aaab", {0: "aaab"}),  # Scoped ungreedy
+
+        # Stress Tests: Many Flags and Scoped Groups
+        ("(?i:a(?m:b(?s:c(?U:d*))))", "Abcd", {0: "Abc"}),
+        ("(?i:A(?m:B(?s:C(?U:D*))))", "abcd", {0: "abc"}),
     ]
     run_suite("Anchors & Flags Tests", cases)

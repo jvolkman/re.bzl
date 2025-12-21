@@ -140,3 +140,19 @@ def run_tests_api():
     res = split(",", "a,b,c", maxsplit = 1)
     expected = ["a", "b,c"]
     assert_eq(res, expected, "split maxsplit")
+
+    print("--- Stress Testing API ---")
+
+    # findall stress
+    long_str = "a" * 1000
+    res = findall("a", long_str)
+    assert_eq(len(res), 1000, "findall stress count")
+
+    # sub stress
+    res = sub("a", "b", long_str)
+    assert_eq(res, "b" * 1000, "sub stress result")
+
+    # split stress
+    long_csv = ",".join(["item"] * 100)
+    res = split(",", long_csv)
+    assert_eq(len(res), 100, "split stress count")

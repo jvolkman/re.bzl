@@ -271,6 +271,14 @@ def _compile_regex(pattern, start_group_id = 0):
     # Always save group 0 (full match) start
     instructions.append((OP_SAVE, 0, None, None))
 
+    # Root group to handle top-level alternations
+    stack.append({
+        "type": "root",
+        "branch_starts": [len(instructions)],
+        "exit_jumps": [],
+        "flags": (case_insensitive, multiline, dot_all, ungreedy),
+    })
+
     pattern_len = len(pattern)
 
     # range(pattern_len) by itself should be sufficient.
@@ -479,12 +487,13 @@ def _compile_regex(pattern, start_group_id = 0):
                     i = _handle_quantifier(pattern, i, instructions, atom_start = start_pc_fix, ungreedy = ungreedy)
 
         elif char == "|":
-            if stack and stack[-1]["type"] == "group":
+            if stack:
                 group_ctx = stack[-1]
                 group_ctx["exit_jumps"].append(len(instructions))
-                instructions.append((3, None, -1, None))
+                instructions.append((OP_JUMP, None, -1, None))
                 group_ctx["branch_starts"].append(len(instructions))
             else:
+                # Should not happen with root group
                 instructions.append((OP_CHAR, char, None, None))
 
         elif char == ".":
@@ -564,6 +573,17 @@ def _compile_regex(pattern, start_group_id = 0):
             i = _handle_quantifier(pattern, i, instructions, ungreedy = ungreedy)
 
         i += 1
+
+    # Finalize root group (alternations)
+    if stack:
+        root = stack.pop()
+        if root["type"] == "root":
+            if len(root["branch_starts"]) > 1:
+                root["exit_jumps"].append(len(instructions))
+                instructions.append((OP_JUMP, None, -1, None))
+                _build_alt_tree(instructions, root)
+                for jump_idx in root["exit_jumps"]:
+                    instructions[jump_idx] = (OP_JUMP, None, len(instructions), None)
 
     # Save group 0 end and match
     instructions.append((OP_SAVE, 1, None, None))

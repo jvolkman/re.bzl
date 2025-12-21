@@ -30,5 +30,17 @@ def run_tests_quantifiers():
         ("a{2,}", "a", None),
         ("a{2,}", "aa", {0: "aa"}),
         ("a{2,}", "aaa", {0: "aaa"}),
+
+        # Stress Tests: Large Repetitions
+        ("a{100}", "a" * 100, {0: "a" * 100}),
+        ("a{100}", "a" * 99, None),
+        ("a{50,100}", "a" * 75, {0: "a" * 75}),
+
+        # Stress Tests: Nested Quantifiers
+        ("(a*)*", "aaaaa", {0: ""}),  # Matches empty at start due to epsilon limit
+        ("(a+)+", "aaaaa", {0: "aaaaa", 1: "aaaaa"}),
+
+        # Stress Tests: Backtracking Stress (NFA should handle)
+        ("a?a?a?a?a?a?a?a?a?a?aaaaaaaaaa", "aaaaaaaaaa", {0: "aaaaaaaaaa"}),
     ]
     run_suite("Quantifier Tests", cases)

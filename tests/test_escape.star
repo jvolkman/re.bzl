@@ -73,3 +73,9 @@ def run_tests_escape():
     assert_match("\\Q(a|b)*\\E", "(a|b)*", "(a|b)*")
     assert_match("\\Qabc", "abc", "abc")  # Missing \E matches to end
     assert_match("a\\Q\\Eb", "ab", "ab")  # Empty \Q\E
+
+    # Stress Tests: Large Character Class
+    assert_match("[a-zA-Z0-9_.-]{5}", "aB1_-", "aB1_-")
+
+    # Stress Tests: Many Escapes
+    assert_match("\\a\\f\\n\\r\\t\\v", "\007\f\n\r\t\v", "\007\f\n\r\t\v")

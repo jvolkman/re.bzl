@@ -32,5 +32,13 @@ def run_tests_core():
         ("\\D+", "123abc456", {0: "abc"}),
         ("\\W+", "abc_123!@#", {0: "!@#"}),
         ("\\S+", "   abc   ", {0: "abc"}),
+
+        # Stress Tests: Many Alternations
+        ("a|b|c|d|e|f|g|h|i|j|k|l|m|n|o|p|q|r|s|t|u|v|w|x|y|z", "z", {0: "z"}),
+        ("a|b|c|d|e|f|g|h|i|j|k|l|m|n|o|p|q|r|s|t|u|v|w|x|y|z", "a", {0: "a"}),
+        ("a|b|c|d|e|f|g|h|i|j|k|l|m|n|o|p|q|r|s|t|u|v|w|x|y|z", "1", None),
+
+        # Stress Tests: Long Literal
+        ("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789", "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789", {0: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"}),
     ]
     run_suite("Core Tests", cases)
