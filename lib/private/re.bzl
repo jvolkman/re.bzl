@@ -96,54 +96,48 @@ def _is_word_char(c):
         return False
     return (c >= "a" and c <= "z") or (c >= "A" and c <= "Z") or (c >= "0" and c <= "9") or c == "_"
 
+_PREDEFINED_CLASSES = {
+    "d": ([("0", "9")], False),
+    "D": ([("0", "9")], True),
+    "w": ([("a", "z"), ("A", "Z"), ("0", "9"), "_"], False),
+    "W": ([("a", "z"), ("A", "Z"), ("0", "9"), "_"], True),
+    "s": ([" ", "\t", "\n", "\r", "\f", "\v"], False),
+    "S": ([" ", "\t", "\n", "\r", "\f", "\v"], True),
+}
+
 def _get_predefined_class(char):
     """Returns (set_definition, is_negated) for \\d, \\w, \\s, \\D, \\W, \\S."""
-    if char == "d":
-        return ([("0", "9")], False)
-    elif char == "D":
-        return ([("0", "9")], True)
-    elif char == "w":
-        return ([("a", "z"), ("A", "Z"), ("0", "9"), "_"], False)
-    elif char == "W":
-        return ([("a", "z"), ("A", "Z"), ("0", "9"), "_"], True)
-    elif char == "s":
-        return ([" ", "\t", "\n", "\r", "\f", "\v"], False)
-    elif char == "S":
-        return ([" ", "\t", "\n", "\r", "\f", "\v"], True)
-    return None
+    return _PREDEFINED_CLASSES.get(char)
+
+_POSIX_CLASSES = {
+    "alnum": [("0", "9"), ("A", "Z"), ("a", "z")],
+    "alpha": [("A", "Z"), ("a", "z")],
+    "ascii": [("\000", "\177")],
+    "blank": [" ", "\t"],
+    "cntrl": [("\000", "\037"), "\177"],
+    "digit": [("0", "9")],
+    "graph": [("\041", "\176")],
+    "lower": [("a", "z")],
+    "print": [("\040", "\176")],
+    "punct": [("\041", "\057"), ("\072", "\100"), ("\133", "\140"), ("\173", "\176")],
+    "space": [" ", "\t", "\n", "\r", "\f", "\v"],
+    "upper": [("A", "Z")],
+    "word": [("0", "9"), ("A", "Z"), ("a", "z"), "_"],
+    "xdigit": [("0", "9"), ("A", "F"), ("a", "f")],
+}
 
 def _get_posix_class(name):
     """Returns the character set for a POSIX class name."""
-    if name == "alnum":
-        return [("0", "9"), ("A", "Z"), ("a", "z")]
-    elif name == "alpha":
-        return [("A", "Z"), ("a", "z")]
-    elif name == "ascii":
-        return [("\000", "\177")]
-    elif name == "blank":
-        return [" ", "\t"]
-    elif name == "cntrl":
-        return [("\000", "\037"), "\177"]
-    elif name == "digit":
-        return [("0", "9")]
-    elif name == "graph":
-        return [("\041", "\176")]
-    elif name == "lower":
-        return [("a", "z")]
-    elif name == "print":
-        return [("\040", "\176")]
-    elif name == "punct":
-        # [!-/:-@[-`{-~]
-        return [("\041", "\057"), ("\072", "\100"), ("\133", "\140"), ("\173", "\176")]
-    elif name == "space":
-        return [" ", "\t", "\n", "\r", "\f", "\v"]
-    elif name == "upper":
-        return [("A", "Z")]
-    elif name == "word":
-        return [("0", "9"), ("A", "Z"), ("a", "z"), "_"]
-    elif name == "xdigit":
-        return [("0", "9"), ("A", "F"), ("a", "f")]
-    return None
+    return _POSIX_CLASSES.get(name)
+
+_SIMPLE_ESCAPES = {
+    "n": "\n",
+    "r": "\r",
+    "t": "\t",
+    "f": "\f",
+    "v": "\v",
+    "a": "\007",
+}
 
 def _make_set_struct(char_set, case_insensitive = False):
     """Creates a struct for a character set, with mixed-case expansion if needed."""
@@ -250,18 +244,9 @@ def _parse_escape(pattern, i, pattern_len):
                     consumed = 2
         return _chr(int(oct_str, 8)), i + 1 + consumed
 
-    if char == "n":
-        return "\n", i
-    elif char == "r":
-        return "\r", i
-    elif char == "t":
-        return "\t", i
-    elif char == "f":
-        return "\f", i
-    elif char == "v":
-        return "\v", i
-    elif char == "a":
-        return "\007", i
+    # Look up simple escapes (\n, \r, etc.)
+    if char in _SIMPLE_ESCAPES:
+        return _SIMPLE_ESCAPES[char], i
 
     return char, i
 
