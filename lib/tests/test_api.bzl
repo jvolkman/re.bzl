@@ -103,3 +103,25 @@ def run_tests_api(env):
     assert_eq(env, m7.re.opt != None, True, "should have opt struct for literal skip")
     assert_eq(env, m7.group(0), "a123b", "literal skip search match")
     assert_eq(env, m7.start(), 1, "literal skip search start")
+
+    # 11. Edge cases and bail-outs
+    # Search anchored at start should delegate to match optimization
+    m8 = search(r"^abc\d+", "abc123xy")
+    assert_eq(env, m8.re.opt != None, True, "anchored search should be optimized")
+    assert_eq(env, m8.group(0), "abc123", "anchored search result")
+
+    # Pure literal skip
+    m9 = search(r"needle", "haystack needle haystack")
+    assert_eq(env, m9.re.opt != None, True, "pure literal search should be optimized")
+    assert_eq(env, m9.group(0), "needle", "pure literal match")
+
+    # Non-optimized complex case (alternation)
+    m10 = search(r"abc|def", "abc")
+
+    # Alternation is currently not optimized in opt struct
+    assert_eq(env, m10.re.opt == None, True, "complex alternation should NOT have opt")
+    assert_eq(env, m10.group(0), "abc", "complex search still works")
+
+    # \d+ DOES have an opt struct (it's a simple set)
+    m11 = search(r"\d+", "123")
+    assert_eq(env, m11.re.opt != None, True, "simple set should have opt struct")
