@@ -349,6 +349,44 @@ def _parse_set_atom(pattern, i, pattern_len):
         return struct(char = current, atoms = None, negated_atoms = None), i + 1
 
 # buildifier: disable=list-append
+def _compile_bracket_class(pattern, i, pattern_len, case_insensitive):
+    """Compiles a [...] set expression.
+
+    Returns (set_struct, is_negated, closing_bracket_index).
+    """
+    is_negated = False
+    if i < pattern_len and pattern[i] == "^":
+        is_negated = True
+        i += 1
+
+    builder = _new_set_builder(case_insensitive = case_insensitive)
+    for _ in range(pattern_len):
+        if i >= pattern_len or pattern[i] == "]":
+            break
+
+        atom, new_i = _parse_set_atom(pattern, i, pattern_len)
+
+        is_range = False
+        if atom.char != None and new_i < pattern_len and pattern[new_i] == "-" and new_i + 1 < pattern_len and pattern[new_i + 1] != "]":
+            end_atom, end_i = _parse_set_atom(pattern, new_i + 1, pattern_len)
+            if end_atom.char != None:
+                builder.add_range(atom.char, end_atom.char)
+                i = end_i
+                is_range = True
+
+        if not is_range:
+            if atom.char != None:
+                builder.add_char(atom.char)
+            elif atom.atoms != None:
+                for item in atom.atoms:
+                    builder.add_range(item[0], item[1])
+            elif atom.negated_atoms != None:
+                builder.add_negated_posix(atom.negated_atoms)
+            i = new_i
+
+    return builder.build(), is_negated, i
+
+# buildifier: disable=list-append
 def _compile_regex(pattern, start_group_id = 0):
     """Compiles regex to bytecode using Thompson NFA construction.
 
@@ -399,41 +437,8 @@ def _compile_regex(pattern, start_group_id = 0):
 
         elif char == "[":
             i += 1
-            is_negated = False
-            if i < pattern_len and pattern[i] == "^":
-                is_negated = True
-                i += 1
+            set_struct, is_negated, i = _compile_bracket_class(pattern, i, pattern_len, case_insensitive)
 
-            builder = _new_set_builder(case_insensitive = case_insensitive)
-            for _ in range(pattern_len):
-                if i >= pattern_len or pattern[i] == "]":
-                    break
-
-                atom, new_i = _parse_set_atom(pattern, i, pattern_len)
-
-                is_range = False
-                if atom.char != None and new_i < pattern_len and pattern[new_i] == "-" and new_i + 1 < pattern_len and pattern[new_i + 1] != "]":
-                    end_atom, end_i = _parse_set_atom(pattern, new_i + 1, pattern_len)
-                    if end_atom.char != None:
-                        builder.add_range(atom.char, end_atom.char)
-                        i = end_i
-                        is_range = True
-
-                if not is_range:
-                    if atom.char != None:
-                        builder.add_char(atom.char)
-                    elif atom.atoms != None:
-                        for item in atom.atoms:
-                            builder.add_range(item[0], item[1])
-                    elif atom.negated_atoms != None:
-                        builder.add_negated_posix(atom.negated_atoms)
-                    i = new_i
-
-            if i < pattern_len and pattern[i] == "]":
-                # Don't increment i here, _handle_quantifier peeks at i + 1
-                pass
-
-            set_struct = builder.build()
             if case_insensitive:
                 has_case_insensitive = True
                 instructions += [(OP_SET_I, (set_struct, is_negated), None, None)]
