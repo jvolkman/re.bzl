@@ -3,6 +3,7 @@ load("//lib/tests:test_api.bzl", "api_test")
 load("//lib/tests:test_core.bzl", "core_test")
 load("//lib/tests:test_escape.bzl", "escape_test")
 load("//lib/tests:test_groups.bzl", "groups_test")
+load("//lib/tests:test_optimization.bzl", "optimization_test")
 load("//lib/tests:test_quantifiers.bzl", "quantifiers_test")
 
 package(default_visibility = ["//visibility:public"])
@@ -19,6 +20,8 @@ groups_test(name = "groups_test")
 
 quantifiers_test(name = "quantifiers_test")
 
+optimization_test(name = "optimization_test")
+
 test_suite(
     name = "all_tests",
     tests = [
@@ -27,6 +30,7 @@ test_suite(
         ":core_test",
         ":escape_test",
         ":groups_test",
+        ":optimization_test",
         ":quantifiers_test",
     ],
 )

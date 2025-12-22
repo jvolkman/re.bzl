@@ -94,6 +94,7 @@ OP_CHAR_I = 14  # Match character case-insensitively
 OP_SET_I = 15  # Match set case-insensitively
 OP_STRING = 16  # Match string literally
 OP_STRING_I = 17  # Match string case-insensitively
+OP_GREEDY_LOOP = 18  # Optimization: Fast-path for x*
 
 def _is_word_char(c):
     """Returns True if c is [a-zA-Z0-9_]."""
@@ -194,11 +195,17 @@ def _new_set_builder(case_insensitive = False):
                     all_chars_val += [c]
         all_chars_str = "".join(all_chars_val)
 
+        # Check if set is simple (fully represented by all_chars)
+        is_simple = (len(state["ranges"]) == 0 and
+                     len(state["negated_posix_list"]) == 0 and
+                     len(all_chars_val) < ALL_CHARS_STR_LIMIT)
+
         return struct(
             lookup = state["lookup"],
             ranges = state["ranges"],
             negated_posix = state["negated_posix_list"],
             all_chars = all_chars_str,
+            is_simple = is_simple,
         )
 
     return struct(
@@ -725,8 +732,156 @@ def _compile_regex(pattern, start_group_id = 0):
 
     return instructions, named_groups, group_count, has_case_insensitive
 
-# buildifier: disable=list-append
 def _optimize_bytecode(instructions):
+    """Runs bytecode optimization passes."""
+    if not instructions:
+        return []
+
+    # Pass 1: Optimize greedy loops (x* followed by disjoint y)
+    instructions = _optimize_greedy_loops(instructions)
+
+    # Pass 2: Merge consecutive characters
+    return _merge_consecutive_chars(instructions)
+
+def _is_disjoint(body_inst, next_inst):
+    """Returns True if the body instruction is disjoint from the next instruction."""
+    b_type = body_inst[0]
+    n_type = next_inst[0]
+
+    # 1. Body must be a simple Set or Char
+    b_chars = None
+    b_lookup = None
+
+    if b_type == OP_CHAR:
+        b_chars = body_inst[1]
+    elif b_type == OP_SET:
+        # Check if set is simple
+        set_struct, is_negated = body_inst[1]
+        if is_negated or not set_struct.is_simple:
+            return False
+        b_chars = set_struct.all_chars
+        b_lookup = set_struct.lookup
+    else:
+        # Complex body (e.g. Group, Any) - not optimizing yet
+        return False
+
+    # 2. Check Next instruction
+    if n_type == OP_MATCH:
+        # End of pattern is disjoint from any char/set
+        return True
+
+    if n_type == OP_CHAR:
+        n_char = next_inst[1]
+        if b_type == OP_SET:
+            return n_char not in b_lookup
+        else:
+            return n_char not in b_chars
+
+    if n_type == OP_SET:
+        # Conservative: Skip if next is Set
+        return False
+
+    if n_type == OP_ANCHOR_END or n_type == OP_ANCHOR_LINE_END:
+        return True
+
+    if n_type == OP_ANCHOR_START or n_type == OP_ANCHOR_LINE_START:
+        return True
+
+    # Default unsafe
+    return False
+
+def _optimize_greedy_loops(instructions):
+    """Detects and optimizes simple greedy loops [a-z]*"""
+    num_insts = len(instructions)
+    new_insts = []
+    old_to_new = {}
+    skip = 0
+
+    for i in range(num_insts):
+        if skip > 0:
+            skip -= 1
+            continue
+
+        old_to_new[i] = len(new_insts)
+        inst = instructions[i]
+        itype, val, pc1, pc2 = inst
+
+        # Pattern: Split(Body, Exit)
+        if itype == OP_SPLIT:
+            body_pc = pc1
+            exit_pc = pc2
+
+            # Sanity check PCs
+            if body_pc > i and body_pc < num_insts and exit_pc > i and exit_pc < num_insts:
+                body_inst = instructions[body_pc]
+
+                # Pattern: Body -> Jump(Split)
+                # Check if body is followed by Jump back to i
+                jump_pc = body_pc + 1
+                if jump_pc < num_insts and instructions[jump_pc][0] == OP_JUMP and instructions[jump_pc][2] == i:
+                    # Pattern: Exit -> Continuation
+                    exit_inst = instructions[exit_pc]
+
+                    if _is_disjoint(body_inst, exit_inst):
+                        # Optimize!
+                        # Convert body to string chars
+                        chars = ""
+                        if body_inst[0] == OP_CHAR:
+                            chars = body_inst[1]
+                        else:  # OP_SET
+                            chars = body_inst[1][0].all_chars
+
+                        # Emit OP_GREEDY_LOOP
+                        new_insts.append((OP_GREEDY_LOOP, chars, exit_pc, None))
+
+                        if body_pc == i + 1:
+                            skip = 2  # Skip body and jump
+
+                        continue
+
+        new_insts.append(inst)
+
+    # Remap PCs
+    # Standard remapping logic:
+    for i in range(num_insts):
+        if i not in old_to_new:
+            # It was skipped.
+            pass
+
+    mapped_insts = []
+    for inst in new_insts:
+        itype = inst[0]
+        if itype == OP_GREEDY_LOOP:
+            chars = inst[1]
+            old_exit = inst[2]
+
+            # Defer resolution to post-pass
+            mapped_insts.append((itype, chars, old_exit, None))
+        else:
+            mapped_insts.append(inst)
+
+    # Post-pass to fix PCs
+    final = []
+    for inst in mapped_insts:
+        itype, val, pc1, pc2 = inst
+        new_pc1 = pc1
+        new_pc2 = pc2
+
+        # Fix jumps
+        if itype == OP_JUMP or itype == OP_SPLIT or itype == OP_GREEDY_LOOP:
+            if pc1 != None and pc1 in old_to_new:
+                new_pc1 = old_to_new[pc1]
+
+        if itype == OP_SPLIT:
+            if pc2 != None and pc2 in old_to_new:
+                new_pc2 = old_to_new[pc2]
+
+        final.append((itype, val, new_pc1, new_pc2))
+
+    return final
+
+# buildifier: disable=list-append
+def _merge_consecutive_chars(instructions):
     """Merges consecutive characters into strings to speed up matching."""
     if not instructions:
         return []
@@ -1014,7 +1169,8 @@ def _handle_quantifier(pattern, i, insts, atom_start = -1, ungreedy = False):
         return i
 
 # buildifier: disable=list-append
-def _get_epsilon_closure(instructions, input_str, input_len, start_pc, start_regs, current_idx, visited, visited_gen):
+# buildifier: disable=function-docstring-args
+def _get_epsilon_closure(instructions, input_str, input_len, start_pc, start_regs, current_idx, visited, visited_gen, greedy_cache):
     reachable = []
     num_inst = len(instructions)
 
@@ -1024,6 +1180,8 @@ def _get_epsilon_closure(instructions, input_str, input_len, start_pc, start_reg
     # Outer loop handles exploration from stack.
     # Inner loop follows single-thread transitions.
     limit = num_inst * 2 + 100
+
+    # We use a large enough number for the inner loop to cover any possible epsilon chain (max instructions).
     inner_limit = num_inst + 10
 
     for _ in range(limit):
@@ -1033,47 +1191,41 @@ def _get_epsilon_closure(instructions, input_str, input_len, start_pc, start_reg
 
         # Inner loop to follow a thread's epsilon transitions.
         for _ in range(inner_limit):
-            if pc >= num_inst:
-                break
-
-            # Deduplication: the first time we reach a state in this generation,
-            # it's via the highest-priority path currently available.
+            # Check if already visited in this generation
             if visited[pc] == visited_gen:
-                # print("DEBUG: closure pc=%d ALREADY VISITED (gen=%d)" % (pc, visited_gen))
                 break
             visited[pc] = visited_gen
-            # print("DEBUG: closure pc=%d visited" % pc)
+
+            if pc >= num_inst:
+                break
 
             inst = instructions[pc]
             itype = inst[0]
 
-            if itype == OP_SPLIT:
-                # Priority: pc1 then pc2. Push pc2 (lower priority) to stack.
-                pc1, pc2 = inst[2], inst[3]
-                if pc2 < num_inst:
-                    stack.append((pc2, regs[:]))
-                if pc1 < num_inst:
-                    pc = pc1  # Continue inner loop with higher priority
-                else:
-                    break
-            elif itype == OP_JUMP:
+            if itype == OP_JUMP:
                 pc = inst[2]
+                # Continue loop to process new pc
+
+            elif itype == OP_SPLIT:
+                # Add both branches
+                pc1 = inst[2]
+                pc2 = inst[3]
+
+                # Push lower priority (pc2) first so we follow pc1 (higher priority) immediately
+                # DFS order matters for priority
+                stack.append((pc2, regs))
+                pc = pc1
+                # Continue loop to process pc1
+
             elif itype == OP_SAVE:
-                reg_idx = inst[1]
-                regs[reg_idx] = current_idx
-                if reg_idx > 1 and reg_idx % 2 == 1:
-                    regs[-1] = reg_idx // 2
+                group_idx = inst[1]
+                regs = list(regs)  # Copy on write
+                regs[group_idx] = current_idx
+
+                # If this is the end of a capturing group (idx >= 3 and odd), update lastindex
+                if group_idx >= 3 and group_idx % 2 == 1:
+                    regs[-1] = group_idx // 2
                 pc += 1
-            elif itype == OP_ANCHOR_START:
-                if current_idx == 0:
-                    pc += 1
-                else:
-                    break
-            elif itype == OP_ANCHOR_END:
-                if current_idx == input_len:
-                    pc += 1
-                else:
-                    break
             elif itype == OP_WORD_BOUNDARY or itype == OP_NOT_WORD_BOUNDARY:
                 is_prev_word = (current_idx > 0 and _is_word_char(input_str[current_idx - 1]))
                 is_curr_word = (current_idx < input_len and _is_word_char(input_str[current_idx]))
@@ -1092,22 +1244,59 @@ def _get_epsilon_closure(instructions, input_str, input_len, start_pc, start_reg
                     pc += 1
                 else:
                     break
+            elif itype == OP_ANCHOR_START:
+                if current_idx == 0:
+                    pc += 1
+                else:
+                    break
+            elif itype == OP_ANCHOR_END:
+                if current_idx == input_len:
+                    pc += 1
+                else:
+                    break
+            elif itype == OP_GREEDY_LOOP:
+                # Optimized x* loop logic with Cache
+                chars = inst[1]
+                match_len = 0
+
+                # Check cache
+                last_end = greedy_cache.get(pc, -1)
+
+                if last_end >= current_idx:
+                    match_len = last_end - current_idx
+                else:
+                    # Compute and cache
+                    current_slice = input_str[current_idx:]
+                    stripped = current_slice.lstrip(chars)
+                    match_len = len(current_slice) - len(stripped)
+                    greedy_cache[pc] = current_idx + match_len
+
+                if match_len == 0:
+                    # Epsilon transition to Exit
+                    pc = inst[2]
+                    # Continue loop to process new pc
+
+                else:
+                    # Consuming state.
+                    # It stops epsilon expansion.
+                    # We add it to reachable and BREAK the inner loop.
+                    reachable.append((pc, regs))
+                    break
             else:
-                # Not an epsilon instruction (e.g. OP_CHAR, OP_MATCH, OP_SET, OP_STRING)
-                # print("DEBUG: closure reached non-epsilon pc=%d" % pc)
-                reachable += [(pc, regs)]
+                # Consuming instruction (CHAR, MATCH, SET etc)
+                # Add to reachable and stop
+                reachable.append((pc, regs))
                 break
 
     return reachable
 
 # buildifier: disable=list-append
-def _process_batch(instructions, batch, char, char_lower, char_idx, input_str):
+def _process_batch(instructions, batch, char, char_lower, char_idx, input_str, greedy_cache):
     """Processes a batch of threads against the current character.
 
     Returns (next_threads, match_regs).
     """
 
-    next_threads_dict = {}  # pc -> regs (deduplication)
     next_threads_list = []  # order preserved
     match_regs = None
 
@@ -1116,6 +1305,8 @@ def _process_batch(instructions, batch, char, char_lower, char_idx, input_str):
     # Starlark sort is stable.
     # Higher priority (lower rank) threads first.
     sorted_batch = sorted(batch, key = lambda t: t[2])
+
+    next_threads_dict = {}  # Deduplication
 
     for pc, regs, rank in sorted_batch:
         inst = instructions[pc]
@@ -1158,13 +1349,77 @@ def _process_batch(instructions, batch, char, char_lower, char_idx, input_str):
         elif itype == OP_SET_I:
             set_struct, is_negated = inst[1]
             match_found = (_char_in_set(set_struct, char_lower) != is_negated)
+        elif itype == OP_GREEDY_LOOP:
+            # Optimized x* loop logic with Cache
+            chars = inst[1]
+            match_len = 0
+
+            # Check cache
+            # Since the loop is disjoint, the end position is invariant for a given segment.
+            # If we computed it at index I, and it ended at index E.
+            # Then at index I+1 (if char matches), it MUST also end at E.
+            # So we can just cache the absolute END position.
+            last_end = greedy_cache.get(pc, -1)
+
+            if last_end >= char_idx:
+                # Reuse cached end position
+                match_len = last_end - char_idx
+
+                # OPTIMIZATION:
+                # If this is the start of the pattern (pc == 0), implies we are in unanchored search.
+                # Since we hit the cache, a previous start index (S < char_idx) already covered this segment
+                # and ends at the SAME absolute position (last_end).
+                # The previous thread is strictly "better" (leftmost match), so this one is redundant.
+                if pc == 0:
+                    continue
+
+            else:
+                # Compute and cache
+                current_slice = input_str[char_idx:]
+                stripped = current_slice.lstrip(chars)
+                match_len = len(current_slice) - len(stripped)
+
+                # Cache the absolute end position
+                greedy_cache[pc] = char_idx + match_len
+
+            # If match_len is 0, we can't optimize here because it's equivalent to epsilon.
+            # But _get_epsilon_closure handles that.
+            # If we are here, it means we MIGHT consume.
+            # Wait, if match_len == 0, we do NOTHING?
+            # _get_epsilon_closure added (exit_pc) as epsilon transition.
+            # So the thread flow is: OP_GREEDY_LOOP -> Exit.
+            # If we are in _process_batch with OP_GREEDY_LOOP, it means we are trying to CONSUME.
+            # But OP_GREEDY_LOOP consumes as a block.
+            # If match_len > 0, we consume all of it and jump to exit_pc.
+            # If match_len == 0, we consume nothing. But we shouldn't be here?
+            # _get_epsilon_closure added (pc, regs) to reachable ONLY if match_len > 0?
+            # Let's check my previous edit to _get_epsilon_closure.
+            # Yes: if match_len > 0: reachable += [(pc, regs)]
+            # So we are guaranteed match_len > 0 here?
+            # Wait, the cache might say match_len == 0?
+            # If previously at X we found match_len > 0.
+            # At X+k, maybe match_len reaches 0.
+            # But _get_epsilon_closure checks "fresh".
+            # _get_epsilon_closure does NOT use the cache yet.
+            # So _get_epsilon_closure sees > 0.
+            # Then we come here. We check cache. Cache should agree > 0.
+
+            target_idx = char_idx + match_len
+            next_pc = inst[2]
+
+            # Add continuation.
+            # Note: We duplicate this logic from before but now with cache.
+            if next_pc not in next_threads_dict:
+                next_threads_dict[next_pc] = regs
+                next_threads_list += [(next_pc, regs, rank, target_idx)]
+
+            continue
 
         if match_found:
-            # Important: just add the raw next pc.
-            # _execute_core will expand its epsilon closure at the correct char_idx.
-            if pc + 1 not in next_threads_dict:
-                next_threads_dict[pc + 1] = regs
-                next_threads_list += [(pc + 1, regs, rank, target_idx)]
+            next_pc = pc + 1
+            if next_pc not in next_threads_dict:
+                next_threads_dict[next_pc] = regs
+                next_threads_list += [(next_pc, regs, rank, target_idx)]
 
     return next_threads_list, match_regs
 
@@ -1184,6 +1439,7 @@ def _execute_core(instructions, input_str, num_regs, start_index = 0, initial_re
 
     # future_threads maps target_idx -> list of (pc, regs, rank)
     future_threads = {}
+    greedy_cache = {}  # pc -> last_end_pos
 
     # Initialize with the start condition
     # Rank is a tuple to maintain priority.
@@ -1210,10 +1466,13 @@ def _execute_core(instructions, input_str, num_regs, start_index = 0, initial_re
         # Populate current_threads from future_threads
         if char_idx in future_threads:
             # Sort by rank to ensure priority is respected during epsilon closure expansion
-            pending = sorted(future_threads.pop(char_idx), key = lambda t: t[2])
+            def _get_rank(t):
+                return t[2]
+
+            pending = sorted(future_threads.pop(char_idx), key = _get_rank)
             for pc, regs, old_rank in pending:
                 # Call epsilon closure to expand this thread at the current index
-                closure = _get_epsilon_closure(instructions, input_str, input_len, pc, regs, char_idx, visited, visited_gen)
+                closure = _get_epsilon_closure(instructions, input_str, input_len, pc, regs, char_idx, visited, visited_gen, greedy_cache)
 
                 # Assign new ranks preserving start_index and using counter for relative priority
                 start_index = old_rank[0]
@@ -1225,7 +1484,7 @@ def _execute_core(instructions, input_str, num_regs, start_index = 0, initial_re
         if not anchored:
             # Check if PC 0 is already in visited for this generation
             if visited[0] != visited_gen:
-                closure_pc0 = _get_epsilon_closure(instructions, input_str, input_len, 0, initial_regs[:], char_idx, visited, visited_gen)
+                closure_pc0 = _get_epsilon_closure(instructions, input_str, input_len, 0, initial_regs[:], char_idx, visited, visited_gen, greedy_cache)
 
                 # Unanchored start gets rank (char_idx, counter)
                 # Since char_idx is the start index for this new thread.
@@ -1240,6 +1499,7 @@ def _execute_core(instructions, input_str, num_regs, start_index = 0, initial_re
 
         # 3. Process current threads
         # 3. Process current threads
+        # 3. Process current threads
         res_future_list, batch_match = _process_batch(
             instructions,
             current_threads,
@@ -1247,6 +1507,7 @@ def _execute_core(instructions, input_str, num_regs, start_index = 0, initial_re
             char_lower,
             char_idx,
             input_str,
+            greedy_cache,
         )
 
         if batch_match:
@@ -1386,6 +1647,12 @@ def _optimize_matcher(instructions):
             else:
                 # Just a single char, already handled by prefix literal collector above if it was at start
                 pass
+
+        elif itype == OP_GREEDY_LOOP:
+            # Case 2b: Optimized Greedy Loop
+            # inst[1] is the chars stirng
+            greedy_set_chars = instructions[idx][1]
+            idx += 1
 
         elif itype == OP_SPLIT:
             # Case 3: [set]* or c* loop -> SPLIT(idx+1, idx+3), ATOM, JUMP idx
