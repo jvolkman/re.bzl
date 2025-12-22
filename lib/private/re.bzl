@@ -72,6 +72,11 @@ _ORD_LOOKUP = {_CHR_LOOKUP[i]: i for i in range(256)}
 def _ord(c):
     return _ORD_LOOKUP[c]
 
+# Types
+_STRING_TYPE = type("")
+_INT_TYPE = type(0)
+_FUNCTION_TYPE = type(_ord)
+
 # Bytecode Instructions
 OP_CHAR = 0  # Match specific character
 OP_ANY = 1  # Match any character (including \n)
@@ -1806,7 +1811,7 @@ def _MatchObject(text, regs, compiled, pos, endpos):
     """
 
     def group(n = 0):
-        if type(n) == "string":
+        if type(n) == _STRING_TYPE:
             if n in compiled.named_groups:
                 n = compiled.named_groups[n]
             else:
@@ -1832,7 +1837,7 @@ def _MatchObject(text, regs, compiled, pos, endpos):
         return tuple(res)
 
     def span(n = 0):
-        if type(n) == "string":
+        if type(n) == _STRING_TYPE:
             if n in compiled.named_groups:
                 n = compiled.named_groups[n]
             else:
@@ -1922,7 +1927,7 @@ def sub(pattern, repl, text, count = 0):
 
         groups = m.groups(default = None)
 
-        if type(repl) == "function":
+        if type(repl) == _FUNCTION_TYPE:
             # m is already a MatchObject-like struct
             replacement = repl(m)
         else:
