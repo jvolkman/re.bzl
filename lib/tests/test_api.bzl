@@ -81,3 +81,25 @@ def run_tests_api(env):
     assert_eq(env, m3.re.opt != None, True, "should have opt struct for ^prefix[set]*")
     assert_eq(env, m3.re.opt.prefix, "1", "opt.prefix should be 1")
     assert_eq(env, "c" in m3.re.opt.greedy_set_chars, True, "opt.greedy_set_chars should include c")
+
+    # 9. Suffix optimization
+    m4 = match(r"^\d+abc$", "123abc")
+    assert_eq(env, m4.re.opt != None, True, "should have opt struct for suffix")
+    assert_eq(env, m4.re.opt.suffix, "abc", "opt.suffix should be abc")
+    assert_eq(env, m4.re.opt.is_anchored_end, True, "opt.is_anchored_end should be True")
+    assert_eq(env, m4.group(0), "123abc", "match result correct")
+
+    m5 = fullmatch(r"^\d+abc$", "123abc")
+    assert_eq(env, m5 != None, True, "fullmatch suffix")
+    assert_eq(env, m5.group(0), "123abc", "fullmatch result correct")
+
+    # 10. Search optimizations
+    m6 = search(r"\d+abc$", "x123abc")
+    assert_eq(env, m6.re.opt != None, True, "should have opt struct for end-anchored search")
+    assert_eq(env, m6.group(0), "123abc", "end-anchored search match")
+    assert_eq(env, m6.start(), 1, "end-anchored search start")
+
+    m7 = search(r"a\w+b", "xa123by")
+    assert_eq(env, m7.re.opt != None, True, "should have opt struct for literal skip")
+    assert_eq(env, m7.group(0), "a123b", "literal skip search match")
+    assert_eq(env, m7.start(), 1, "literal skip search start")
