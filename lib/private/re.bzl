@@ -790,6 +790,7 @@ def _is_disjoint(body_inst, next_inst):
     # Default unsafe
     return False
 
+# buildifier: disable=list-append
 def _optimize_greedy_loops(instructions):
     """Detects and optimizes simple greedy loops [a-z]*"""
     num_insts = len(instructions)
@@ -832,14 +833,14 @@ def _optimize_greedy_loops(instructions):
                             chars = body_inst[1][0].all_chars
 
                         # Emit OP_GREEDY_LOOP
-                        new_insts.append((OP_GREEDY_LOOP, chars, exit_pc, None))
+                        new_insts += [(OP_GREEDY_LOOP, chars, exit_pc, None)]
 
                         if body_pc == i + 1:
                             skip = 2  # Skip body and jump
 
                         continue
 
-        new_insts.append(inst)
+        new_insts += [inst]
 
     # Remap PCs
     # Standard remapping logic:
@@ -856,9 +857,9 @@ def _optimize_greedy_loops(instructions):
             old_exit = inst[2]
 
             # Defer resolution to post-pass
-            mapped_insts.append((itype, chars, old_exit, None))
+            mapped_insts += [(itype, chars, old_exit, None)]
         else:
-            mapped_insts.append(inst)
+            mapped_insts += [inst]
 
     # Post-pass to fix PCs
     final = []
@@ -876,7 +877,7 @@ def _optimize_greedy_loops(instructions):
             if pc2 != None and pc2 in old_to_new:
                 new_pc2 = old_to_new[pc2]
 
-        final.append((itype, val, new_pc1, new_pc2))
+        final += [(itype, val, new_pc1, new_pc2)]
 
     return final
 
@@ -929,11 +930,11 @@ def _merge_consecutive_chars(instructions):
 
             if len(s) > 1:
                 new_type = OP_STRING if itype == OP_CHAR else OP_STRING_I
-                new_insts.append((new_type, s, None, None))
+                new_insts += [(new_type, s, None, None)]
                 skip = j - i - 1
                 continue
 
-        new_insts.append(inst)
+        new_insts += [inst]
 
     # Final "virtual" instruction for matches at the end
     old_to_new[num_insts] = len(new_insts)
@@ -951,7 +952,7 @@ def _merge_consecutive_chars(instructions):
         itype, val, pc1, pc2 = inst
         new_pc1 = old_to_new[pc1] if pc1 != None else None
         new_pc2 = old_to_new[pc2] if pc2 != None else None
-        final_insts.append((itype, val, new_pc1, new_pc2))
+        final_insts += [(itype, val, new_pc1, new_pc2)]
 
     return final_insts
 
@@ -1213,13 +1214,13 @@ def _get_epsilon_closure(instructions, input_str, input_len, start_pc, start_reg
 
                 # Push lower priority (pc2) first so we follow pc1 (higher priority) immediately
                 # DFS order matters for priority
-                stack.append((pc2, regs))
+                stack += [(pc2, regs)]
                 pc = pc1
                 # Continue loop to process pc1
 
             elif itype == OP_SAVE:
                 group_idx = inst[1]
-                regs = list(regs)  # Copy on write
+                regs = regs[:]  # Copy on write
                 regs[group_idx] = current_idx
 
                 # If this is the end of a capturing group (idx >= 3 and odd), update lastindex
@@ -1280,12 +1281,12 @@ def _get_epsilon_closure(instructions, input_str, input_len, start_pc, start_reg
                     # Consuming state.
                     # It stops epsilon expansion.
                     # We add it to reachable and BREAK the inner loop.
-                    reachable.append((pc, regs))
+                    reachable += [(pc, regs)]
                     break
             else:
                 # Consuming instruction (CHAR, MATCH, SET etc)
                 # Add to reachable and stop
-                reachable.append((pc, regs))
+                reachable += [(pc, regs)]
                 break
 
     return reachable
@@ -1477,7 +1478,7 @@ def _execute_core(instructions, input_str, num_regs, start_index = 0, initial_re
                 # Assign new ranks preserving start_index and using counter for relative priority
                 start_index = old_rank[0]
                 for c_pc, c_regs in closure:
-                    current_threads.append((c_pc, c_regs, (start_index, rank_counter)))
+                    current_threads += [(c_pc, c_regs, (start_index, rank_counter))]
                     rank_counter += 1
 
         # 2. Unanchored Search Injection
@@ -1489,7 +1490,7 @@ def _execute_core(instructions, input_str, num_regs, start_index = 0, initial_re
                 # Unanchored start gets rank (char_idx, counter)
                 # Since char_idx is the start index for this new thread.
                 for c_pc, c_regs in closure_pc0:
-                    current_threads.append((c_pc, c_regs, (char_idx, rank_counter)))
+                    current_threads += [(c_pc, c_regs, (char_idx, rank_counter))]
                     rank_counter += 1
 
         # Optimization: Stop early if no threads left
