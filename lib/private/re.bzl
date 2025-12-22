@@ -27,7 +27,6 @@ Match Object Properties:
 """
 
 MAX_GROUP_NAME_LEN = 32
-MAX_EPSILON_VISITS_FACTOR = 20
 
 _CHR_LOOKUP = (
     "\000\001\002\003\004\005\006\007" +
@@ -1102,10 +1101,10 @@ def _get_epsilon_closure(instructions, input_str, input_len, start_pc, start_reg
     return reachable
 
 # buildifier: disable=list-append
-def _process_batch(instructions, batch, char, char_lower, char_idx, input_str, input_len, visited, visited_gen):
+def _process_batch(instructions, batch, char, char_lower, char_idx, input_str):
     """Processes a batch of threads against the current character.
 
-    Returns (next_threads, match_regs, visited_gen).
+    Returns (next_threads, match_regs).
     """
 
     next_threads_dict = {}  # pc -> regs (deduplication)
@@ -1167,7 +1166,7 @@ def _process_batch(instructions, batch, char, char_lower, char_idx, input_str, i
                 next_threads_dict[pc + 1] = regs
                 next_threads_list += [(pc + 1, regs, rank, target_idx)]
 
-    return next_threads_list, match_regs, visited_gen
+    return next_threads_list, match_regs
 
 # buildifier: disable=list-append
 def _execute_core(instructions, input_str, num_regs, start_index = 0, initial_regs = None, anchored = False, has_case_insensitive = False):
@@ -1241,16 +1240,13 @@ def _execute_core(instructions, input_str, num_regs, start_index = 0, initial_re
 
         # 3. Process current threads
         # 3. Process current threads
-        res_future_list, batch_match, visited_gen = _process_batch(
+        res_future_list, batch_match = _process_batch(
             instructions,
             current_threads,
             char,
             char_lower,
             char_idx,
             input_str,
-            input_len,
-            visited,
-            visited_gen,
         )
 
         if batch_match:
