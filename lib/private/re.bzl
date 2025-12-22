@@ -1235,24 +1235,47 @@ def _optimize_matcher(instructions):
         else:
             break
 
-    # After prefix, check for a simple [set]* loop
-    # Pattern: [set]* -> 0: SPLIT(1, 4), 1: SET, 2: JUMP 0, 4: ...
-    set_chars = None
-    if idx + 2 < len(instructions):
+    # After prefix, check for sets and loops
+    prefix_set_chars = None
+    greedy_set_chars = None
+
+    if idx < len(instructions):
         itype = instructions[idx][0]
-        if itype == OP_SPLIT:
-            loop_target = instructions[idx][2]
-            loop_exit = instructions[idx][3]
-            if loop_target == idx + 1 and loop_exit == idx + 3:
-                # Potential loop
+        if itype in [OP_SET, OP_SET_I]:
+            set_data, is_negated = instructions[idx][1]
+            if not is_negated:
+                # Case 1: [set]+ -> SET, SPLIT(idx, idx+2)
+                if idx + 1 < len(instructions) and instructions[idx + 1][0] == OP_SPLIT and instructions[idx + 1][2] == idx and instructions[idx + 1][3] == idx + 2:
+                    prefix_set_chars = set_data.all_chars
+                    greedy_set_chars = set_data.all_chars
+                    idx += 2
+                else:
+                    # Case 2: Just a match-one prefix set [set]
+                    prefix_set_chars = set_data.all_chars
+                    idx += 1
+        elif itype == OP_SPLIT:
+            # Case 3: [set]* loop -> SPLIT(idx+1, idx+3), SET, JUMP idx
+            if idx + 2 < len(instructions) and instructions[idx][2] == idx + 1 and instructions[idx][3] == idx + 3:
                 set_inst = instructions[idx + 1]
                 jump_inst = instructions[idx + 2]
                 if set_inst[0] in [OP_SET, OP_SET_I] and jump_inst[0] == OP_JUMP and jump_inst[2] == idx:
-                    # Match!
-                    # Check if it was negated. Fast path only supports positive sets for now.
                     set_data, is_negated = set_inst[1]
                     if not is_negated:
-                        set_chars = set_data.all_chars
+                        greedy_set_chars = set_data.all_chars
+                        idx += 3
+
+    # If we have a prefix_set but no greedy_set yet, check if a greedy_set follows
+    # Example: ^\d\w*
+    if prefix_set_chars != None and greedy_set_chars == None:
+        if idx < len(instructions) and instructions[idx][0] == OP_SPLIT:
+            # Check for * loop: SPLIT(idx+1, idx+3), SET, JUMP idx
+            if idx + 2 < len(instructions) and instructions[idx][2] == idx + 1 and instructions[idx][3] == idx + 3:
+                set_inst = instructions[idx + 1]
+                jump_inst = instructions[idx + 2]
+                if set_inst[0] in [OP_SET, OP_SET_I] and jump_inst[0] == OP_JUMP and jump_inst[2] == idx:
+                    set_data, is_negated = set_inst[1]
+                    if not is_negated:
+                        greedy_set_chars = set_data.all_chars
                         idx += 3
 
     # Check if we reached the matching end: SAVE 1, MATCH
@@ -1262,7 +1285,8 @@ def _optimize_matcher(instructions):
                 return struct(
                     prefix = prefix,
                     case_insensitive_prefix = case_insensitive_prefix,
-                    set_chars = set_chars,
+                    prefix_set_chars = prefix_set_chars,
+                    greedy_set_chars = greedy_set_chars,
                 )
 
     return None
@@ -1302,27 +1326,37 @@ def _match_bytecode(bytecode, text, named_groups, group_count, has_case_insensit
         # Simple anchored prefix match
         if text.startswith(opt.prefix):
             match_end = len(opt.prefix)
-            if opt.set_chars != None:
-                # Greedy set match
+            fast_path_ok = True
+
+            # 1. Match prefix_set_chars (exactly once)
+            if opt.prefix_set_chars != None:
+                if match_end < len(text) and text[match_end] in opt.prefix_set_chars:
+                    match_end += 1
+                else:
+                    fast_path_ok = False
+
+            # 2. Match greedy_set_chars (zero or more)
+            if fast_path_ok and opt.greedy_set_chars != None:
                 rest = text[match_end:]
-                stripped = rest.lstrip(opt.set_chars)
+                stripped = rest.lstrip(opt.greedy_set_chars)
                 match_end += len(rest) - len(stripped)
 
-            # For match(), it doesn't have to consume everything.
-            # But we need to return regs.
-            # Simplified: regs[0]=0, regs[1]=match_end, all others -1
-            regs = [-1] * ((group_count + 1) * 2 + 1)
-            regs[0] = 0
-            regs[1] = match_end
-            compiled = struct(
-                bytecode = bytecode,
-                named_groups = named_groups,
-                group_count = group_count,
-                pattern = None,
-                has_case_insensitive = has_case_insensitive,
-                opt = opt,
-            )
-            return _MatchObject(text, regs, compiled, 0, len(text))
+            if fast_path_ok:
+                # For match(), it doesn't have to consume everything.
+                # But we need to return regs.
+                # Simplified: regs[0]=0, regs[1]=match_end, all others -1
+                regs = [-1] * ((group_count + 1) * 2 + 1)
+                regs[0] = 0
+                regs[1] = match_end
+                compiled = struct(
+                    bytecode = bytecode,
+                    named_groups = named_groups,
+                    group_count = group_count,
+                    pattern = None,
+                    has_case_insensitive = has_case_insensitive,
+                    opt = opt,
+                )
+                return _MatchObject(text, regs, compiled, 0, len(text))
 
     regs = _match_regs(bytecode, text, group_count, has_case_insensitive = has_case_insensitive)
     if not regs:
@@ -1338,6 +1372,39 @@ def _match_bytecode(bytecode, text, named_groups, group_count, has_case_insensit
     return _MatchObject(text, regs, compiled, 0, len(text))
 
 def _fullmatch_bytecode(bytecode, text, named_groups, group_count, has_case_insensitive = False, opt = None):
+    # Fast path optimization
+    if opt and not has_case_insensitive:
+        if text.startswith(opt.prefix):
+            match_end = len(opt.prefix)
+            fast_path_ok = True
+
+            # 1. Match prefix_set_chars (exactly once)
+            if opt.prefix_set_chars != None:
+                if match_end < len(text) and text[match_end] in opt.prefix_set_chars:
+                    match_end += 1
+                else:
+                    fast_path_ok = False
+
+            # 2. Match greedy_set_chars (zero or more)
+            if fast_path_ok and opt.greedy_set_chars != None:
+                rest = text[match_end:]
+                stripped = rest.lstrip(opt.greedy_set_chars)
+                match_end += len(rest) - len(stripped)
+
+            if fast_path_ok and match_end == len(text):
+                regs = [-1] * ((group_count + 1) * 2 + 1)
+                regs[0] = 0
+                regs[1] = match_end
+                compiled = struct(
+                    bytecode = bytecode,
+                    named_groups = named_groups,
+                    group_count = group_count,
+                    pattern = None,
+                    has_case_insensitive = has_case_insensitive,
+                    opt = opt,
+                )
+                return _MatchObject(text, regs, compiled, 0, len(text))
+
     regs = _fullmatch_regs(bytecode, text, group_count, has_case_insensitive = has_case_insensitive)
     if not regs:
         return None

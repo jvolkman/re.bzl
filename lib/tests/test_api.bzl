@@ -80,4 +80,4 @@ def run_tests_api(env):
     m3 = match(r"^1\w*", "1ccc")
     assert_eq(env, m3.re.opt != None, True, "should have opt struct for ^prefix[set]*")
     assert_eq(env, m3.re.opt.prefix, "1", "opt.prefix should be 1")
-    assert_eq(env, "c" in m3.re.opt.set_chars, True, "opt.set_chars should include c")
+    assert_eq(env, "c" in m3.re.opt.greedy_set_chars, True, "opt.greedy_set_chars should include c")

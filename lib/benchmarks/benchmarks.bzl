@@ -31,7 +31,7 @@ def benchmark_case_insensitive(n):
         search(p, text)
 
 def benchmark_fast_path(n):
-    p = compile(r"^\d\w*")
+    p = compile(r"^1\w*")
     text = "1" + "a" * 100
     for _ in range(n):
         match(p, text)
@@ -43,6 +43,7 @@ def run_benchmarks(n = 0):
     Args:
       n: Number of iterations.
     """
+
     benchmark_simple_match(n)
     print("Running complex_match...")
     benchmark_complex_match(n)
