@@ -701,7 +701,7 @@ def _build_alt_tree(instructions, group_ctx):
     instructions += [(OP_JUMP, None, entry_pc + 1, None)]
 
     tree_start_pc = len(instructions)
-    current_branches = list(branches)
+    current_branches = branches[:]
     current_branches[0] = relocated_pc
 
     for j in range(len(current_branches) - 1):
@@ -942,7 +942,7 @@ def _get_epsilon_closure(instructions, input_str, input_len, start_pc, start_reg
                     visited[pc2] = 1
 
                     # Must copy registers for the forked path.
-                    stack += [(pc2, list(regs))]
+                    stack += [(pc2, regs[:])]
 
                 # Branch 1 has higher priority. Continue inner loop.
                 if pc1 < num_inst and not visited[pc1]:
@@ -1062,7 +1062,7 @@ def _process_batch(instructions, batch, char, char_lower, char_idx, input_str, i
 
         if match_found:
             # We must pass a COPY of regs because _get_epsilon_closure will modify it in-place.
-            closure = _get_epsilon_closure(instructions, input_str, input_len, pc + 1, list(regs), char_idx + 1)
+            closure = _get_epsilon_closure(instructions, input_str, input_len, pc + 1, regs[:], char_idx + 1)
             for c_pc, c_regs in closure:
                 if c_pc not in next_threads_dict:
                     next_threads_dict[c_pc] = c_regs
