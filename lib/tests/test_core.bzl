@@ -50,7 +50,14 @@ def run_tests_core(env):
         ("a|b|c|d|e|f|g|h|i|j|k|l|m|n|o|p|q|r|s|t|u|v|w|x|y|z", "a", {0: "a"}),
         ("a|b|c|d|e|f|g|h|i|j|k|l|m|n|o|p|q|r|s|t|u|v|w|x|y|z", "1", None),
 
-        # Stress Tests: Long Literal
+        # 6. Priority and Leftmost Matching
+        ("a|ab", "ab", {0: "a"}),  # NFA/RE2: first branch wins (leftmost)
+        ("ab|a", "ab", {0: "ab"}),
+        ("a*", "aaa", {0: "aaa"}),  # Greedy
+        ("a*?", "aaa", {0: ""}),  # Lazy
+
+        # 7. Stress Tests: Long Literal
         ("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789", "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789", {0: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"}),
+        (".*", "abc\ndef", {0: "abc"}),  # Dot without s flag
     ]
     run_suite(env, "Core Tests", cases)

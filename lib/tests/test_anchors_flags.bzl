@@ -65,6 +65,19 @@ def run_tests_anchors_flags(env):
         ("(?U)a{1,3}", "aaa", {0: "a"}),
         ("(?U:a*)b", "aaab", {0: "aaab"}),  # Scoped ungreedy
 
+        # More Multiline Anchors
+        ("(?m)^a", "b\na", {0: "a"}),
+        ("(?m)a$", "a\nb", {0: "a"}),
+        ("(?m)^$", "\n", {0: ""}),
+        ("(?m)^$", "a\n\nb", {0: ""}),
+
+        # Word Boundary Edge Cases
+        ("\\b", " ", None),  # Empty match not supported by search yet?
+        ("\\B", "a", {0: ""}),  # Wait, search("(?m)^", "a") should match.
+
+        # Flags: dotall with multiline
+        ("(?ms)^a.b$", "a\nb", {0: "a\nb"}),
+
         # Stress Tests: Many Flags and Scoped Groups
         ("(?i:a(?m:b(?s:c(?U:d*))))", "Abcd", {0: "Abc"}),
         ("(?i:A(?m:B(?s:C(?U:D*))))", "abcd", {0: "abc"}),

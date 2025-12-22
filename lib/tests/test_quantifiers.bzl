@@ -44,8 +44,18 @@ def run_tests_quantifiers(env):
         ("(abc)?def", "abcdef", {0: "abcdef", 1: "abc"}),
         ("(abc)?def", "def", {0: "def"}),
         ("(a+)+", "aaaaa", {0: "aaaaa", 1: "aaaaa"}),
+        ("(a*)*", "aaaaa", {0: "aaaaa", 1: ""}),  # Nested stars
+        ("(a*)*", "", {0: "", 1: ""}),
+        ("(a?)*", "aaa", {0: "aaa", 1: ""}),
+        ("(a|)+", "aaa", {0: "aaa", 1: ""}),  # Empty alternation match
 
-        # 5. Stress and Backtracking
+        # 5. Overlapping / Non-trivial Quantifiers
+        ("a{2,3}a{2,3}", "aaaa", {0: "aaaa"}),
+        ("a{2,3}a{2,3}", "aaaaa", {0: "aaaaa"}),
+        ("a{2,3}a{2,3}", "aaaaaa", {0: "aaaaaa"}),
+        ("a{2,3}a{2,3}", "aaa", None),
+
+        # 6. Stress and Backtracking
         ("a?a?a?a?a?a?a?a?a?a?aaaaaaaaaa", "aaaaaaaaaa", {0: "aaaaaaaaaa"}),
         ("a{100}", "a" * 100, {0: "a" * 100}),
         ("a{100}", "a" * 99, None),

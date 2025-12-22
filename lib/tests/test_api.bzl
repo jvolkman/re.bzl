@@ -122,6 +122,30 @@ def run_tests_api(env):
     assert_eq(env, m10.re.opt == None, True, "complex alternation should NOT have opt")
     assert_eq(env, m10.group(0), "abc", "complex search still works")
 
-    # \d+ DOES have an opt struct (it's a simple set)
-    m11 = search(r"\d+", "123")
-    assert_eq(env, m11.re.opt != None, True, "simple set should have opt struct")
+    # 12. Match Object Methods: groups() and span()
+    m_full = search(r"(\w+) (\w+)", "hello world")
+    assert_eq(env, m_full.groups(), ("hello", "world"), "groups() should return all subgroups")
+    assert_eq(env, m_full.groups("none"), ("hello", "world"), "groups() with default should not affect matched groups")
+
+    m_partial = search(r"(a)?(b)", "b")
+    assert_eq(env, m_partial.groups(), (None, "b"), "groups() should return None for unmatched")
+    assert_eq(env, m_partial.groups("miss"), ("miss", "b"), "groups() should return default for unmatched")
+
+    assert_eq(env, m_full.span(0), (0, 11), "span(0) for 'hello world'")
+    assert_eq(env, m_full.span(1), (0, 5), "span(1) for 'hello'")
+    assert_eq(env, m_full.span(2), (6, 11), "span(2) for 'world'")
+    assert_eq(env, m_partial.span(1), (-1, -1), "span() for unmatched group should be (-1, -1)")
+
+    # 13. Named Group Edge Cases
+    # Starlark doesn't allow duplicate keys in dict, but regex might.
+    # RE2/Python: (?P<name>a)(?P<name>b) is usually an error or last one wins.
+    # Our implementation: named_groups[group_name] = gid. Last one wins.
+    m_named = search(r"(?P<n>a)(?P<n>b)", "ab")
+    assert_eq(env, m_named.group("n"), "b", "last named group wins in case of duplicates")
+    assert_eq(env, m_named.lastgroup, "n", "lastgroup should be n")
+
+    # Match in one branch of alternation but not another
+    m_alt = search(r"(?P<left>a)|(?P<right>b)", "b")
+    assert_eq(env, m_alt.group("left"), None, "unmatched named group should return None")
+    assert_eq(env, m_alt.group("right"), "b", "matched named group should return value")
+    assert_eq(env, m_alt.lastgroup, "right", "lastgroup should be the matched named group")

@@ -23,6 +23,17 @@ def run_tests_groups(env):
         ("(orange) (apple)", "orange apple", {0: "orange apple", 1: "orange", 2: "apple"}),
         ("(orange) (apple)", "orange banana", None),
 
+        # Non-capturing Groups
+        ("(?:a)(b)", "ab", {0: "ab", 1: "b"}),
+        ("a(?:b|c)d", "acd", {0: "acd"}),
+
+        # Unmatched Optional Groups
+        ("(a)?(b)", "b", {0: "b", 1: None, 2: "b"}),
+        ("((a)|(b))", "b", {0: "b", 1: "b", 2: None, 3: "b"}),
+
+        # Nested Named Groups
+        ("(?P<outer>a(?P<inner>b)c)", "abc", {0: "abc", "outer": "abc", "inner": "b"}),
+
         # RE2 Compatibility: Alternative Named Group Syntax
         ("(?<name>abc)", "abc", {0: "abc", "name": "abc"}),
 
