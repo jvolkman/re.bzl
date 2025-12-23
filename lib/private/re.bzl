@@ -85,6 +85,7 @@ OP_SET_I = 15  # Match set case-insensitively
 OP_STRING = 16  # Match string literally
 OP_STRING_I = 17  # Match string case-insensitively
 OP_GREEDY_LOOP = 18  # Optimization: Fast-path for x*
+OP_GREEDY_LOOP_I = 19  # Optimization: Fast-path for (?i)x*
 
 _PREDEFINED_CLASSES = {
     "d": ([("0", "9")], False),
@@ -746,10 +747,11 @@ def _is_disjoint(body_inst, next_inst):
     # 1. Body must be a simple Set or Char
     b_chars = None
     b_lookup = None
+    b_is_case_insensitive = (b_type == OP_CHAR_I or b_type == OP_SET_I)
 
-    if b_type == OP_CHAR:
+    if b_type == OP_CHAR or b_type == OP_CHAR_I:
         b_chars = body_inst[1]
-    elif b_type == OP_SET:
+    elif b_type == OP_SET or b_type == OP_SET_I:
         # Check if set is simple
         set_struct, is_negated = body_inst[1]
         if is_negated or not set_struct.is_simple:
@@ -765,14 +767,56 @@ def _is_disjoint(body_inst, next_inst):
         # End of pattern is disjoint from any char/set
         return True
 
-    if n_type == OP_CHAR:
+    if n_type == OP_CHAR or n_type == OP_CHAR_I:
         n_char = next_inst[1]
-        if b_type == OP_SET:
-            return n_char not in b_lookup
-        else:
-            return n_char not in b_chars
 
-    if n_type == OP_SET:
+        # Check consistency of case
+        # If body is CI, next must be effectively checked against CI body
+
+        # Determine if we can check disjointness
+        # 1. Body=CS, Next=CS: simple check
+        # 2. Body=CI, Next=CI: simple check (both lower)
+        # 3. Body=CS, Next=CI: strictly harder? No, if Body doesn't include Next (lower or upper)
+
+        # Simplification: Only optimize if case types match OR we do full cross-check
+        # For now, let's allow:
+        # - Body=CS, Next=CS (Legacy)
+        # - Body=CI, Next=CI (New)
+        # - Body=CI, Next=CS (New - effectively CI check since Body is lower)
+
+        # If Body is CI, b_chars are lowercased.
+        # If Next is CI, n_char is lowercased.
+
+        if b_is_case_insensitive:
+            # Body is lowercased.
+            if n_type == OP_CHAR_I:
+                # Next is lowercased. Direct check.
+                check_char = n_char
+            else:
+                # Next is CS. Must check lower(n_char).
+                check_char = n_char.lower()
+
+            if b_lookup:
+                return check_char not in b_lookup
+            else:
+                # OP_CHAR_I body
+                return check_char != b_chars
+
+        else:
+            # Body is CS.
+            if n_type == OP_CHAR_I:
+                # Next is CI (lower).
+                # Disjoint if Body doesn't contain upper or lower version of n_char/set?
+                # Conservative: Skip mixing CS body with CI next
+                return False
+            else:
+                # Legacy CS-CS
+                if b_lookup:
+                    return n_char not in b_lookup
+                else:
+                    return n_char != b_chars
+
+    if n_type == OP_SET or n_type == OP_SET_I:
         # Conservative: Skip if next is Set
         return False
 
@@ -826,14 +870,24 @@ def _optimize_greedy_loops(instructions):
                             # Optimize!
                             # Convert body to string chars
                             chars = ""
+                            is_ci = False
+
                             if body_inst[0] == OP_CHAR:
                                 chars = body_inst[1]
-                            else:  # OP_SET
+                            elif body_inst[0] == OP_CHAR_I:
+                                chars = body_inst[1]
+                                is_ci = True
+                            elif body_inst[0] == OP_SET:  # OP_SET
                                 chars = body_inst[1][0].all_chars
+                            elif body_inst[0] == OP_SET_I:
+                                chars = body_inst[1][0].all_chars
+                                is_ci = True
 
                             # Emit OP_GREEDY_LOOP
-                            # Emit OP_GREEDY_LOOP
-                            new_insts += [(OP_GREEDY_LOOP, chars, exit_pc, None)]
+                            if is_ci:
+                                new_insts += [(OP_GREEDY_LOOP_I, chars, exit_pc, None)]
+                            else:
+                                new_insts += [(OP_GREEDY_LOOP, chars, exit_pc, None)]
                             skip = 2  # Skip body and loop_back
                             continue
 
@@ -849,7 +903,7 @@ def _optimize_greedy_loops(instructions):
     mapped_insts = []
     for inst in new_insts:
         itype = inst[0]
-        if itype == OP_GREEDY_LOOP:
+        if itype == OP_GREEDY_LOOP or itype == OP_GREEDY_LOOP_I:
             chars = inst[1]
             old_exit = inst[2]
 
@@ -866,7 +920,8 @@ def _optimize_greedy_loops(instructions):
         new_pc2 = pc2
 
         # Fix jumps
-        if itype == OP_JUMP or itype == OP_SPLIT or itype == OP_GREEDY_LOOP:
+        # Fix jumps
+        if itype == OP_JUMP or itype == OP_SPLIT or itype == OP_GREEDY_LOOP or itype == OP_GREEDY_LOOP_I:
             if pc1 != None and pc1 in old_to_new:
                 new_pc1 = old_to_new[pc1]
 
@@ -1106,7 +1161,7 @@ def _handle_quantifier(pattern, i, insts, atom_start = -1, ungreedy = False):
 
 # buildifier: disable=list-append
 # buildifier: disable=function-docstring-args
-def _get_epsilon_closure(instructions, input_str, input_len, start_pc, start_regs, current_idx, visited, visited_gen, greedy_cache):
+def _get_epsilon_closure(instructions, input_str, input_len, start_pc, start_regs, current_idx, visited, visited_gen, greedy_cache, input_lower = None):
     reachable = []
     num_inst = len(instructions)
 
@@ -1192,7 +1247,7 @@ def _get_epsilon_closure(instructions, input_str, input_len, start_pc, start_reg
                     pc += 1
                 else:
                     break
-            elif itype == OP_GREEDY_LOOP:
+            elif itype == OP_GREEDY_LOOP or itype == OP_GREEDY_LOOP_I:
                 # Optimized x* loop logic with Cache
                 chars = inst[1]
                 match_len = 0
@@ -1204,7 +1259,11 @@ def _get_epsilon_closure(instructions, input_str, input_len, start_pc, start_reg
                     match_len = last_end - current_idx
                 else:
                     # Compute and cache
-                    current_slice = input_str[current_idx:]
+                    if itype == OP_GREEDY_LOOP_I and input_lower != None:
+                        current_slice = input_lower[current_idx:]
+                    else:
+                        current_slice = input_str[current_idx:]
+
                     stripped = current_slice.lstrip(chars)
                     match_len = len(current_slice) - len(stripped)
                     greedy_cache[pc] = current_idx + match_len
@@ -1267,10 +1326,12 @@ def _process_batch(instructions, batch, char, char_lower):
             match_found = (_char_in_set(set_struct, char_lower) != is_negated)
         elif itype == OP_GREEDY_LOOP:
             match_found = (char in inst[1])
+        elif itype == OP_GREEDY_LOOP_I:
+            match_found = (char_lower in inst[1])
 
         if match_found:
             next_pc = pc
-            if itype != OP_GREEDY_LOOP:
+            if itype != OP_GREEDY_LOOP and itype != OP_GREEDY_LOOP_I:
                 next_pc = pc + 1
 
             if next_pc not in next_threads_dict:
@@ -1289,6 +1350,7 @@ def _execute_core(instructions, input_str, num_regs, start_index = 0, initial_re
 
     visited = [0] * len(instructions)
     visited_gen = 0
+    greedy_cache = {}
 
     current_threads = [(0, initial_regs)]
     best_match_regs = None
@@ -1304,7 +1366,7 @@ def _execute_core(instructions, input_str, num_regs, start_index = 0, initial_re
         # Thompson simulation maintains threads in priority order.
         # Deduplication keeps only the highest priority path to each PC.
         for s_pc, s_regs in current_threads:
-            closure = _get_epsilon_closure(instructions, input_str, input_len, s_pc, s_regs, char_idx, visited, visited_gen, {})
+            closure = _get_epsilon_closure(instructions, input_str, input_len, s_pc, s_regs, char_idx, visited, visited_gen, greedy_cache, input_lower = input_lower)
             for c_pc, c_regs in closure:
                 expanded_batch += [(c_pc, c_regs)]
 
@@ -1312,7 +1374,7 @@ def _execute_core(instructions, input_str, num_regs, start_index = 0, initial_re
             # Injection for unanchored search. Add PC 0 at every index.
             # PC 0 will set regs[0] = char_idx via its SAVE 0 instruction.
             if visited[0] < visited_gen + 2:  # Check if PC 0 has been visited less than twice in this generation
-                closure0 = _get_epsilon_closure(instructions, input_str, input_len, 0, initial_regs[:], char_idx, visited, visited_gen, {})
+                closure0 = _get_epsilon_closure(instructions, input_str, input_len, 0, initial_regs[:], char_idx, visited, visited_gen, greedy_cache, input_lower = input_lower)
                 for c_pc, c_regs in closure0:
                     expanded_batch += [(c_pc, c_regs)]
         if not expanded_batch and anchored:

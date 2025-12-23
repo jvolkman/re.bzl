@@ -30,6 +30,13 @@ def benchmark_case_insensitive(n):
     for _ in range(n):
         search(p, text)
 
+def benchmark_case_insensitive_greedy(n):
+    # Optimized: O(N)
+    p = compile("(?i)a*b")
+    text = "A" * 1000 + "b"
+    for _ in range(n):
+        search(p, text)
+
 # New fast-path optimization benchmarks
 def _benchmark_fast_path_group(n):
     # Start-Anchored
@@ -66,5 +73,7 @@ def run_benchmarks(n = 0):
     benchmark_large_input(n)
     print("Running case_insensitive...")
     benchmark_case_insensitive(n)
+    print("Running case_insensitive_greedy...")
+    benchmark_case_insensitive_greedy(n)
     print("Running fast_path optimizations...")
     _benchmark_fast_path_group(n)
