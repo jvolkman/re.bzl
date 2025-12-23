@@ -1,3 +1,4 @@
+load("@bazel_skylib//:bzl_library.bzl", "bzl_library")
 load("//lib/tests:test_anchors_flags.bzl", "anchors_flags_test")
 load("//lib/tests:test_api.bzl", "api_test")
 load("//lib/tests:test_core.bzl", "core_test")
@@ -8,6 +9,16 @@ load("//lib/tests:test_quantifiers.bzl", "quantifiers_test")
 load("//lib/tests:test_unicode.bzl", "unicode_test")
 
 package(default_visibility = ["//visibility:public"])
+
+bzl_library(
+    name = "utils",
+    srcs = ["utils.bzl"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//lib:re",
+        "@bazel_skylib//lib:unittest",
+    ],
+)
 
 anchors_flags_test(name = "anchors_flags_test")
 
