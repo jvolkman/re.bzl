@@ -62,12 +62,6 @@ _SIMPLE_ESCAPES = {
     "a": "\007",
 }
 
-def _chr(i):
-    return _CHR_LOOKUP[i]
-
-def _ord(c):
-    return _ORD_LOOKUP[c]
-
 def _get_predefined_class(char):
     """Returns (set_definition, is_negated) for \\d, \\w, \\s, \\D, \\W, \\S."""
     return _PREDEFINED_CLASSES.get(char)
@@ -96,13 +90,13 @@ def _new_set_builder(case_insensitive = False):
             c = c.lower()
         state["lookup"][c] = True
         state["all_chars_list"] += [c]
-        code = _ord(c)
+        code = _ORD_LOOKUP[c]
         if code < 256:
             state["ascii_list"][code] = True
 
     def add_range(start, end):
-        start_code = _ord(start)
-        end_code = _ord(end)
+        start_code = _ORD_LOOKUP[start]
+        end_code = _ORD_LOOKUP[end]
         dist = end_code - start_code
 
         # Update ASCII list (intersection with 0-255)
@@ -111,16 +105,16 @@ def _new_set_builder(case_insensitive = False):
             if limit > 255:
                 limit = 255
             for k in range(start_code, limit + 1):
-                c_iter = _chr(k)
+                c_iter = _CHR_LOOKUP[k]
                 if case_insensitive:
                     c_iter = c_iter.lower()
-                code_final = _ord(c_iter)
+                code_final = _ORD_LOOKUP[c_iter]
                 if code_final < 256:
                     state["ascii_list"][code_final] = True
 
         if dist < RANGE_EXPANSION_LIMIT:
             for code in range(start_code, end_code + 1):
-                c = _chr(code)
+                c = _CHR_LOOKUP[code]
                 if case_insensitive:
                     c = c.lower()
                 state["lookup"][c] = True
@@ -149,7 +143,7 @@ def _new_set_builder(case_insensitive = False):
 
                 # Check ranges
                 s, e = item
-                if k >= _ord(s) and k <= _ord(e):
+                if k >= _ORD_LOOKUP[s] and k <= _ORD_LOOKUP[e]:
                     in_pset = True
                     break
 
@@ -209,7 +203,7 @@ def _parse_escape(pattern, i, pattern_len):
                 # Starlark int(s, 16) works
                 val = int(hex_str, 16)
                 if val <= 255:
-                    return _chr(val), end_brace
+                    return _CHR_LOOKUP[val], end_brace
                 else:
                     # For now, we only support up to 255 in our _chr lookup
                     # but we could return the raw int if we changed _chr
@@ -225,7 +219,7 @@ def _parse_escape(pattern, i, pattern_len):
                     break
 
             if valid_hex:
-                return _chr(int(hex_str, 16)), i + 2
+                return _CHR_LOOKUP[int(hex_str, 16)], i + 2
         return "x", i
 
     if char >= "0" and char <= "7":
@@ -239,7 +233,7 @@ def _parse_escape(pattern, i, pattern_len):
                 if int(oct_str + pattern[i + 2], 8) <= 255:
                     oct_str += pattern[i + 2]
                     consumed = 2
-        return _chr(int(oct_str, 8)), i + 1 + consumed
+        return _CHR_LOOKUP[int(oct_str, 8)], i + 1 + consumed
 
     # Look up simple escapes (\n, \r, etc.)
     if char in _SIMPLE_ESCAPES:

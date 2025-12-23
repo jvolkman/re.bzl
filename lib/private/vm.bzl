@@ -95,10 +95,6 @@ _WORD_CHARS = {
     "_": True,
 }
 
-def _is_word_char(c):
-    """Returns True if c is [a-zA-Z0-9_]."""
-    return c in _WORD_CHARS
-
 def _char_in_set(set_struct, c):
     """Checks if character c is in the set_struct."""
     if c in ORD_LOOKUP:
@@ -188,8 +184,8 @@ def _get_epsilon_closure(instructions, input_str, input_len, start_pc, start_reg
                     regs[-1] = group_idx // 2
                 pc += 1
             elif itype == OP_WORD_BOUNDARY or itype == OP_NOT_WORD_BOUNDARY:
-                is_prev_word = (current_idx > 0 and _is_word_char(input_str[current_idx - 1]))
-                is_curr_word = (current_idx < input_len and _is_word_char(input_str[current_idx]))
+                is_prev_word = (current_idx > 0 and input_str[current_idx - 1] in _WORD_CHARS)
+                is_curr_word = (current_idx < input_len and input_str[current_idx] in _WORD_CHARS)
                 match = (is_prev_word != is_curr_word) if itype == OP_WORD_BOUNDARY else (is_prev_word == is_curr_word)
                 if match:
                     pc += 1
@@ -264,7 +260,7 @@ def _process_batch(instructions, batch, input_str, current_idx, input_len, input
     """Processes a batch of threads against the current character.
 
     batch is a list of (pc, regs) in priority order.
-    Returns (next_threads_list, best_match_regs, scheduled_matches).
+    Returns (next_threads_list, best_match_regs).
     """
     next_threads_list = []
     next_threads_dict = {}
@@ -438,6 +434,7 @@ def execute(instructions, input_str, num_regs, start_index = 0, initial_regs = N
 
     return best_match_regs
 
+# buildifier: disable=list-append
 def expand_replacement(repl, match_str, groups, named_groups = {}):
     """Expands backreferences in replacement string.
 
