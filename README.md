@@ -1,6 +1,6 @@
 # bazel-regex
 
-A lightweight, pure Starlark implementation of a Regex Engine.
+A pure Starlark implementation of a Regex Engine.
 
 ## Overview
 
