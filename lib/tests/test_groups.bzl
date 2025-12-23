@@ -42,5 +42,26 @@ def run_tests_groups(env):
 
         # Stress Tests: Many Named Groups
         ("(?P<g1>a)(?P<g2>b)(?P<g3>c)(?P<g4>d)(?P<g5>e)", "abcde", {0: "abcde", "g1": "a", "g2": "b", "g3": "c", "g4": "d", "g5": "e"}),
+
+        # Realistic: URI Parsing
+        # ^(([^:/?#]+):)?(//([^/?#]*))?([^?#]*)(\?([^#]*))?(#(.*))?
+        # Groups:
+        # 2: scheme
+        # 4: authority
+        # 5: path
+        # 7: query
+        # 9: fragment
+        (
+            r"^((?P<scheme>[^:/?#]+):)?(//(?P<authority>[^/?#]*))?(?P<path>[^?#]*)(\?(?P<query>[^#]*))?(#(?P<fragment>.*))?",
+            "https://www.google.com/search?q=bazel#frag",
+            {
+                0: "https://www.google.com/search?q=bazel#frag",
+                "scheme": "https",
+                "authority": "www.google.com",
+                "path": "/search",
+                "query": "q=bazel",
+                "fragment": "frag",
+            },
+        ),
     ]
     run_suite(env, "Group Tests", cases)
