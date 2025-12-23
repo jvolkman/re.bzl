@@ -1,0 +1,15 @@
+load("//docs:docs.bzl", "stardoc_with_diff_test")
+
+package(default_visibility = ["//visibility:public"])
+
+stardoc_with_diff_test(
+    name = "re_doc",
+    bzl_library_target = "//lib:re",
+    input_file = "//lib:re.bzl",
+    out_file = "re.md",
+)
+
+alias(
+    name = "update",
+    actual = ":re_doc",
+)
