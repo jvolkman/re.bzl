@@ -6,6 +6,8 @@ A lightweight, pure Starlark implementation of a Regex Engine.
 
 `bazel-regex` provides a Thompson NFA-based regex engine designed for Starlark environments (like Bazel). It provides a significant subset of RE2 syntax with linear-time performance guarantees.
 
+Vibe coded with Gemini.
+
 ## Usage
 
 ```python
@@ -34,7 +36,7 @@ if prog.search("123"):
 
 ## Syntax Reference
 
-`bazel-regex` supports a significant subset of RE2 syntax. Below is a detailed reference of supported features.
+`bazel-regex` aims to support most of RE2 syntax. Below is a detailed reference of supported features.
 
 ### Single-character expressions
 | Syntax | Description |
@@ -140,8 +142,6 @@ if prog.search("123"):
 
 ## Performance
 
-## Performance
-
 While `bazel-regex` attempts to optimize for performance, it's... still written in Starlark. To maximize efficiency within these constraints, the engine leverages several key strategies:
 
 - **Thompson NFA**: Guarantees $O(N \times S)$ time complexity (where $N$ is input length and $S$ is state count). This provides linear-time performance and prevents ReDoS (Regular Expression Denial of Service) attacks that can occur with backtracking engines.
@@ -155,9 +155,6 @@ Add the following to your `MODULE.bazel`:
 ```python
 bazel_dep(name = "bazel-regex", version = "0.1.0")
 ```
-
-
-
 
 ## License
 
