@@ -3,7 +3,7 @@ Bazel module definition for the Starlark regex engine.
 """
 
 module(
-    name = "regexlib",
+    name = "bazel-regex",
     version = "0.1.0",
 )
 

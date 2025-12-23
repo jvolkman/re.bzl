@@ -1,14 +1,40 @@
-# regexlib
+# bazel-regex
 
 A lightweight, pure Starlark implementation of a Regex Engine.
 
 ## Overview
 
-`regexlib` provides a Thompson NFA-based regex engine designed for Starlark environments (like Bazel) where the standard `re` module is unavailable. It supports a significant subset of RE2 syntax and is optimized for correctness and ease of integration.
+`bazel-regex` provides a Thompson NFA-based regex engine designed for Starlark environments (like Bazel). It provides a significant subset of RE2 syntax with linear-time performance guarantees.
+
+## Usage
+
+```python
+load("@bazel-regex//lib:re.bzl", "compile", "findall", "fullmatch", "search", "sub")
+
+# Search for a pattern
+m = search(r"(\w+)=(\d+)", "key=123")
+if m:
+    print(m.group(1)) # "key"
+    print(m.group(2)) # "123"
+
+# Replacement
+result = sub(r"a+", "b", "abaac") # "bbbc"
+
+# Find All
+tokens = findall(r"\w+", "hello world") # ["hello", "world"]
+
+# Full Match
+is_exact = fullmatch(r"v\d+\.\d+", "v1.2") # <MatchObject> or None
+
+# Pre-compile for reuse (more efficient for multiple searches)
+prog = compile(r"\d+")
+if prog.search("123"):
+    print("Found digits")
+```
 
 ## Syntax Reference
 
-`regexlib` supports a significant subset of RE2 syntax. Below is a detailed reference of supported features.
+`bazel-regex` supports a significant subset of RE2 syntax. Below is a detailed reference of supported features.
 
 ### Single-character expressions
 | Syntax | Description |
@@ -105,43 +131,33 @@ A lightweight, pure Starlark implementation of a Regex Engine.
 
 ## Compatibility
 
-`regexlib` aims for high compatibility with [RE2 syntax](https://github.com/google/re2/blob/main/doc/syntax.txt). Most non-Unicode features are supported.
+`bazel-regex` aims for high compatibility with [RE2 syntax](https://github.com/google/re2/blob/main/doc/syntax.txt). Most non-Unicode features are supported.
 
 ### Key Differences
 - **Unicode**: Currently, only ASCII/UTF-8 byte-level matching is supported. Unicode character classes (`\p{...}`) are not implemented.
 - **Backreferences**: Not supported (consistent with RE2's linear-time guarantee).
 - **Lookarounds**: Not supported.
 
+## Performance
+
+## Performance
+
+While `bazel-regex` attempts to optimize for performance, it's... still written in Starlark. To maximize efficiency within these constraints, the engine leverages several key strategies:
+
+- **Thompson NFA**: Guarantees $O(N \times S)$ time complexity (where $N$ is input length and $S$ is state count). This provides linear-time performance and prevents ReDoS (Regular Expression Denial of Service) attacks that can occur with backtracking engines.
+- **Native String Offloading**: To avoid the overhead of Starlark's high-level operations, the engine offloads as much work as possible to native C++/Java-backed string methods like `find()`, `lstrip()`, `rstrip()`, and `startswith()`.
+- **Pre-computation**: Expensive operations—such as computing lowercase versions for case-insensitive matches or generating word-character masks—are performed once during compilation or initial execution setup. This keeps the inner match loop as tight as possible.
+
 ## Installation
 
 Add the following to your `MODULE.bazel`:
 
 ```python
-bazel_dep(name = "regexlib", version = "0.1.0")
+bazel_dep(name = "bazel-regex", version = "0.1.0")
 ```
 
-## Usage
 
-```python
-load("@regexlib//lib:re.bzl", "search", "match", "findall", "sub", "split")
 
-# Search for a pattern
-m = search(r"(\w+)=(\d+)", "key=123")
-if m:
-    print(m.group(1)) # "key"
-    print(m.group(2)) # "123"
-
-# Replace matches
-result = sub(r"a+", "b", "abaac") # "bbbc"
-```
-
-## Development
-
-### Running Tests
-
-```bash
-bazel test //lib/tests:all_tests
-```
 
 ## License
 
