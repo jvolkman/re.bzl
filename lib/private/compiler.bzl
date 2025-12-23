@@ -85,6 +85,7 @@ def _new_set_builder(case_insensitive = False):
         "ranges": [],
         "negated_posix_list": [],
         "all_chars_list": [],
+        "ascii_list": [False] * 256,
     }
 
     RANGE_EXPANSION_LIMIT = 512
@@ -95,11 +96,27 @@ def _new_set_builder(case_insensitive = False):
             c = c.lower()
         state["lookup"][c] = True
         state["all_chars_list"] += [c]
+        code = _ord(c)
+        if code < 256:
+            state["ascii_list"][code] = True
 
     def add_range(start, end):
         start_code = _ord(start)
         end_code = _ord(end)
         dist = end_code - start_code
+
+        # Update ASCII list (intersection with 0-255)
+        if start_code < 256:
+            limit = end_code
+            if limit > 255:
+                limit = 255
+            for k in range(start_code, limit + 1):
+                c_iter = _chr(k)
+                if case_insensitive:
+                    c_iter = c_iter.lower()
+                code_final = _ord(c_iter)
+                if code_final < 256:
+                    state["ascii_list"][code_final] = True
 
         if dist < RANGE_EXPANSION_LIMIT:
             for code in range(start_code, end_code + 1):
@@ -113,7 +130,31 @@ def _new_set_builder(case_insensitive = False):
 
     def add_negated_posix(pset):
         # pset is a list of atoms (chars or ranges)
+        # pset is a list of atoms (chars or ranges)
         state["negated_posix_list"] += [pset]
+
+        # Update ASCII list
+        for k in range(256):
+            # Check if k is in pset
+            in_pset = False
+            for item in pset:
+                # item is char "c" or range ("c1", "c2") - wait, pset format?
+                # _PREDEFINED_CLASSES values are ([("0", "9")], False).
+                # _POSIX_CLASSES values are [("0", "9"), ...].
+                # So item is always a range tuple?
+                # Let's check _get_posix_class returns list of tuples.
+                # _compile_bracket_class calls add_negated_posix with atom.negated_atoms
+                # _parse_set_atom returns negated_atoms=pset (from _get_posix_class)
+                # So yes, pset is list of (start_char, end_char) tuples.
+
+                # Check ranges
+                s, e = item
+                if k >= _ord(s) and k <= _ord(e):
+                    in_pset = True
+                    break
+
+            if not in_pset:
+                state["ascii_list"][k] = True
 
     def build():
         # Deduplicate for all_chars_str
@@ -137,6 +178,7 @@ def _new_set_builder(case_insensitive = False):
             negated_posix = state["negated_posix_list"],
             all_chars = all_chars_str,
             is_simple = is_simple,
+            ascii_bitmap = tuple(state["ascii_list"]),
         )
 
     return struct(
@@ -606,9 +648,54 @@ def _optimize_greedy_loops(instructions):
 
     return final
 
+# buildifier: disable=list-append
+def _optimize_jumps(instructions):
+    """Collapses chains of JUMP -> JUMP and SPLIT -> JUMP."""
+    num_insts = len(instructions)
+
+    # Limit iterations to avoid infinite loops in case of malformed bytecode (cycles)
+    for _ in range(10):
+        optimized = False
+        new_insts = []
+        for i in range(num_insts):
+            inst = instructions[i]
+            itype, val, pc1, pc2 = inst
+
+            new_pc1 = pc1
+            new_pc2 = pc2
+            changed = False
+
+            if pc1 != None and pc1 < num_insts:
+                target_inst = instructions[pc1]
+                if target_inst[0] == OP_JUMP:
+                    new_pc1 = target_inst[2]
+                    if new_pc1 != pc1:
+                        changed = True
+
+            if pc2 != None and pc2 < num_insts:
+                target_inst = instructions[pc2]
+                if target_inst[0] == OP_JUMP:
+                    new_pc2 = target_inst[2]
+                    if new_pc2 != pc2:
+                        changed = True
+
+            if changed:
+                new_insts.append((itype, val, new_pc1, new_pc2))
+                optimized = True
+            else:
+                new_insts.append(inst)
+
+        instructions = new_insts
+        if not optimized:
+            break
+
+    return instructions
+
 def _optimize_bytecode(instructions):
     """Optimizes instructions for performance."""
-    return _optimize_greedy_loops(instructions)
+    instructions = _optimize_greedy_loops(instructions)
+    instructions = _optimize_jumps(instructions)
+    return instructions
 
 # buildifier: disable=list-append
 def _build_alt_tree(instructions, group_ctx):

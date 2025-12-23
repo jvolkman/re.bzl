@@ -21,19 +21,87 @@ load(
     "OP_SET_I",
     "OP_SPLIT",
     "OP_WORD_BOUNDARY",
+    "ORD_LOOKUP",
 )
 
 # Types
 _STRING_TYPE = type("")
 
+_WORD_CHARS = {
+    "a": True,
+    "b": True,
+    "c": True,
+    "d": True,
+    "e": True,
+    "f": True,
+    "g": True,
+    "h": True,
+    "i": True,
+    "j": True,
+    "k": True,
+    "l": True,
+    "m": True,
+    "n": True,
+    "o": True,
+    "p": True,
+    "q": True,
+    "r": True,
+    "s": True,
+    "t": True,
+    "u": True,
+    "v": True,
+    "w": True,
+    "x": True,
+    "y": True,
+    "z": True,
+    "A": True,
+    "B": True,
+    "C": True,
+    "D": True,
+    "E": True,
+    "F": True,
+    "G": True,
+    "H": True,
+    "I": True,
+    "J": True,
+    "K": True,
+    "L": True,
+    "M": True,
+    "N": True,
+    "O": True,
+    "P": True,
+    "Q": True,
+    "R": True,
+    "S": True,
+    "T": True,
+    "U": True,
+    "V": True,
+    "W": True,
+    "X": True,
+    "Y": True,
+    "Z": True,
+    "0": True,
+    "1": True,
+    "2": True,
+    "3": True,
+    "4": True,
+    "5": True,
+    "6": True,
+    "7": True,
+    "8": True,
+    "9": True,
+    "_": True,
+}
+
 def _is_word_char(c):
     """Returns True if c is [a-zA-Z0-9_]."""
-    if c == None:
-        return False
-    return (c >= "a" and c <= "z") or (c >= "A" and c <= "Z") or (c >= "0" and c <= "9") or c == "_"
+    return c in _WORD_CHARS
 
 def _char_in_set(set_struct, c):
     """Checks if character c is in the set_struct."""
+    if c in ORD_LOOKUP:
+        return set_struct.ascii_bitmap[ORD_LOOKUP[c]]
+
     if c in set_struct.lookup:
         return True
 
@@ -214,10 +282,16 @@ def _process_batch(instructions, batch, char, char_lower):
             match_found = (char != "\n")
         elif itype == OP_SET:
             set_struct, is_negated = inst[1]
-            match_found = (_char_in_set(set_struct, char) != is_negated)
+            if char in ORD_LOOKUP:
+                match_found = (set_struct.ascii_bitmap[ORD_LOOKUP[char]] != is_negated)
+            else:
+                match_found = (_char_in_set(set_struct, char) != is_negated)
         elif itype == OP_SET_I:
             set_struct, is_negated = inst[1]
-            match_found = (_char_in_set(set_struct, char_lower) != is_negated)
+            if char_lower in ORD_LOOKUP:
+                match_found = (set_struct.ascii_bitmap[ORD_LOOKUP[char_lower]] != is_negated)
+            else:
+                match_found = (_char_in_set(set_struct, char_lower) != is_negated)
         elif itype == OP_GREEDY_LOOP:
             match_found = (char in inst[1])
         elif itype == OP_GREEDY_LOOP_I:
