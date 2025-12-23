@@ -136,7 +136,13 @@ if prog.search("123"):
 `bazel-regex` aims for high compatibility with [RE2 syntax](https://github.com/google/re2/blob/main/doc/syntax.txt). Most non-Unicode features are supported.
 
 ### Key Differences
-- **Unicode**: Currently, only ASCII/UTF-8 byte-level matching is supported. Unicode character classes (`\p{...}`) are not implemented.
+- **Unicode Support**:
+    - Starlark strings are sequences of **environment-dependent** elements (UTF-K).
+        - In **Bazel (Java)**: Strings are UTF-16. `.` matches one UTF-16 code unit. Non-BMP characters (like `🚀`) are 2 units (surrogate pair). `len('🚀') == 2`.
+        - In **starlark-go**: Strings are UTF-8. `.` matches one byte. `🚀` is 4 bytes. `len('🚀') == 4`.
+    - Character classes `[...]` and `[^...]` operate on these individual elements.
+    - Quantifiers apply to the preceding atom. For multibyte/multi-unit characters, you must group them (e.g., `(🚀)+`) to match the full sequence.
+    - Unicode character categories (`\p{...}`) are not supported.
 - **Backreferences**: Not supported (consistent with RE2's linear-time guarantee).
 - **Lookarounds**: Not supported.
 
