@@ -22,11 +22,32 @@ _FUNCTION_TYPE = type(len)
 def compile(pattern):
     """Compiles a regex pattern into a reusable object.
 
+    The returned object has 'search', 'match', and 'fullmatch' methods that work
+    like the top-level functions but with the pattern pre-compiled.
+
     Args:
       pattern: The regex pattern string.
 
     Returns:
-      A struct containing the compiled bytecode and methods.
+      A struct containing the compiled bytecode and methods:
+      - search(text): Scans text for a match. Returns a MatchObject or None.
+      - match(text): Checks for a match at the beginning of text. Returns a MatchObject or None.
+      - fullmatch(text): Checks for a match of the entire text. Returns a MatchObject or None.
+      - pattern: The pattern string.
+      - group_count: The number of capturing groups.
+
+      The MatchObject returned by these methods has the following members:
+      - group(n=0): Returns the string matched by group n (int or string name).
+      - groups(default=None): Returns a tuple of all captured groups.
+      - span(n=0): Returns the (start, end) tuple of the match for group n.
+      - start(n=0): Returns the start index of the match for group n.
+      - end(n=0): Returns the end index of the match for group n.
+      - string: The string passed to match/search.
+      - re: The compiled regex object.
+      - pos: The start position of the search.
+      - endpos: The end position of the search.
+      - lastindex: The integer index of the last matched capturing group.
+      - lastgroup: The name of the last matched capturing group.
     """
     if hasattr(pattern, "bytecode"):
         return pattern
@@ -63,8 +84,8 @@ def search(pattern, text):
       text: The text to match against.
 
     Returns:
-      A dictionary containing the match results (group ID/name -> matched string),
-      or None if no match was found.
+      A MatchObject containing the match results, or None if no match was found.
+      See `compile` for details on MatchObject.
     """
     compiled = compile(pattern)
     return search_bytecode(compiled.bytecode, text, compiled.named_groups, compiled.group_count, start_index = 0, has_case_insensitive = compiled.has_case_insensitive, opt = compiled.opt)
@@ -77,8 +98,8 @@ def match(pattern, text):
       text: The text to match against.
 
     Returns:
-      A dictionary containing the match results (group ID/name -> matched string),
-      or None if no match was found.
+      A MatchObject containing the match results, or None if no match was found.
+      See `compile` for details on MatchObject.
     """
     compiled = compile(pattern)
     return match_bytecode(compiled.bytecode, text, compiled.named_groups, compiled.group_count, start_index = 0, has_case_insensitive = compiled.has_case_insensitive, opt = compiled.opt)
@@ -91,8 +112,8 @@ def fullmatch(pattern, text):
       text: The text to match against.
 
     Returns:
-      A dictionary containing the match results (group ID/name -> matched string),
-      or None if no match was found.
+      A MatchObject containing the match results, or None if no match was found.
+      See `compile` for details on MatchObject.
     """
     compiled = compile(pattern)
     return fullmatch_bytecode(compiled.bytecode, text, compiled.named_groups, compiled.group_count, start_index = 0, has_case_insensitive = compiled.has_case_insensitive, opt = compiled.opt)

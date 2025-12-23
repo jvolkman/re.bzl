@@ -14,6 +14,10 @@ compile(<a href="#compile-pattern">pattern</a>)
 
 Compiles a regex pattern into a reusable object.
 
+The returned object has 'search', 'match', and 'fullmatch' methods that work
+like the top-level functions but with the pattern pre-compiled.
+
+
 **PARAMETERS**
 
 
@@ -23,7 +27,25 @@ Compiles a regex pattern into a reusable object.
 
 **RETURNS**
 
-A struct containing the compiled bytecode and methods.
+A struct containing the compiled bytecode and methods:
+- search(text): Scans text for a match. Returns a MatchObject or None.
+- match(text): Checks for a match at the beginning of text. Returns a MatchObject or None.
+- fullmatch(text): Checks for a match of the entire text. Returns a MatchObject or None.
+- pattern: The pattern string.
+- group_count: The number of capturing groups.
+
+The MatchObject returned by these methods has the following members:
+- group(n=0): Returns the string matched by group n (int or string name).
+- groups(default=None): Returns a tuple of all captured groups.
+- span(n=0): Returns the (start, end) tuple of the match for group n.
+- start(n=0): Returns the start index of the match for group n.
+- end(n=0): Returns the end index of the match for group n.
+- string: The string passed to match/search.
+- re: The compiled regex object.
+- pos: The start position of the search.
+- endpos: The end position of the search.
+- lastindex: The integer index of the last matched capturing group.
+- lastgroup: The name of the last matched capturing group.
 
 
 <a id="findall"></a>
@@ -77,8 +99,8 @@ Try to apply the pattern to the entire string.
 
 **RETURNS**
 
-A dictionary containing the match results (group ID/name -> matched string),
-or None if no match was found.
+A MatchObject containing the match results, or None if no match was found.
+See `compile` for details on MatchObject.
 
 
 <a id="match"></a>
@@ -103,8 +125,8 @@ Try to apply the pattern at the start of the string.
 
 **RETURNS**
 
-A dictionary containing the match results (group ID/name -> matched string),
-or None if no match was found.
+A MatchObject containing the match results, or None if no match was found.
+See `compile` for details on MatchObject.
 
 
 <a id="search"></a>
@@ -129,8 +151,8 @@ Scan through string looking for the first location where the regex pattern produ
 
 **RETURNS**
 
-A dictionary containing the match results (group ID/name -> matched string),
-or None if no match was found.
+A MatchObject containing the match results, or None if no match was found.
+See `compile` for details on MatchObject.
 
 
 <a id="split"></a>
