@@ -375,24 +375,21 @@ def execute(instructions, input_str, num_regs, start_index = 0, initial_regs = N
     return best_match_regs
 
 # buildifier: disable=list-append
-def expand_replacement(repl, match_str, groups, named_groups = {}):
-    """Expands backreferences in replacement string.
+def parse_replacement_template(repl, named_groups = {}):
+    """Parses a replacement string into a template of tokens.
 
     Args:
       repl: Replacement string.
-      match_str: The full matched string.
-      groups: Tuple of captured groups.
       named_groups: Map of group names to IDs.
 
     Returns:
-      The expanded replacement string.
+      A list of tokens (strings for literals, integers for group IDs).
     """
-
-    # Simple implementation: replace \1, \2, etc.
-    # Starlark doesn't have re.sub inside itself, so we iterate manually.
-    res_parts = []
+    tokens = []
+    current_literal = []
     skip = 0
     repl_len = len(repl)
+
     for i in range(repl_len):
         if skip > 0:
             skip -= 1
@@ -401,16 +398,11 @@ def expand_replacement(repl, match_str, groups, named_groups = {}):
         c = repl[i]
         if c == "\\" and i + 1 < repl_len:
             next_c = repl[i + 1]
+            gid = -1
+
             if next_c >= "0" and next_c <= "9":
                 gid = int(next_c)
-                if gid == 0:
-                    res_parts += [match_str]
-                elif gid <= len(groups):
-                    val = groups[gid - 1]
-                    if val != None:
-                        res_parts += [val]
                 skip = 1
-                continue
             elif next_c == "g" and i + 2 < repl_len and repl[i + 2] == "<":
                 # Named group \g<name>
                 start_name = i + 3
@@ -424,25 +416,300 @@ def expand_replacement(repl, match_str, groups, named_groups = {}):
                     name = repl[start_name:end_name]
                     if name in named_groups:
                         gid = named_groups[name]
-                        if gid <= len(groups):
-                            val = groups[gid - 1]
-                            if val != None:
-                                res_parts += [val]
-                        skip = end_name - i
-                        continue
+                    skip = end_name - i
 
-        res_parts += [c]
-    return "".join(res_parts)
+            if gid != -1:
+                # Flush literal buffer
+                if current_literal:
+                    tokens += ["".join(current_literal)]
+                    current_literal = []
+                tokens += [gid]
+                continue
 
-def search_regs(bytecode, text, group_count, start_index = 0, has_case_insensitive = False, input_lower = None, word_mask = None):
+        current_literal += [c]
+
+    if current_literal:
+        tokens += ["".join(current_literal)]
+
+    return tokens
+
+# buildifier: disable=list-append
+def expand_template(template, match_str, groups):
+    """Expands a parsed replacement template.
+
+    Args:
+      template: List of tokens (strings or ints).
+      match_str: The full matched string.
+      groups: Tuple of captured groups.
+
+    Returns:
+      The expanded replacement string.
+    """
+    res = []
+    for token in template:
+        if type(token) == _STRING_TYPE:
+            res += [token]
+        else:
+            gid = token
+            if gid == 0:
+                res += [match_str]
+            elif gid <= len(groups):
+                val = groups[gid - 1]
+                if val != None:
+                    res += [val]
+
+    return "".join(res)
+
+def expand_replacement(repl, match_str, groups, named_groups = {}):
+    """Expands backreferences in replacement string.
+
+    Args:
+      repl: Replacement string.
+      match_str: The full matched string.
+      groups: Tuple of captured groups.
+      named_groups: Map of group names to IDs.
+
+    Returns:
+      The expanded replacement string.
+    """
+    template = parse_replacement_template(repl, named_groups)
+    return expand_template(template, match_str, groups)
+
+def search_regs(bytecode, text, group_count, start_index = 0, has_case_insensitive = False, opt = None, input_lower = None, word_mask = None):
+    """Executes a search returning registers.
+
+    The returned `regs` is a flat list of integers representing [start, end] pairs for each group.
+    regs[0] is start of group 0.
+    regs[1] is end of group 0.
+    regs[2 * n] is start of group n.
+    regs[2 * n + 1] is end of group n.
+    This flat structure is used for performance to avoid allocating tuple objects.
+
+    Args:
+      bytecode: The bytecode.
+      text: The text.
+      group_count: Number of groups.
+      start_index: Start index.
+      has_case_insensitive: CI flag.
+      opt: Optimization data.
+      input_lower: Pre-calculated lowercase input string.
+      word_mask: Pre-calculated word character mask.
+
+    Returns:
+      List of registers (start/end indices) or None.
+    """
+    if input_lower == None and has_case_insensitive:
+        input_lower = text.lower()
+
+    # Fast path optimization
+    if opt:
+        if opt.is_anchored_start:
+            # If anchored at start, search is just match
+            return match_regs(bytecode, text, group_count, start_index = start_index, has_case_insensitive = has_case_insensitive, opt = opt, input_lower = input_lower, word_mask = word_mask)
+
+        if opt.is_anchored_end and not has_case_insensitive:
+            # Case: ...sets...suffix$
+            if text.endswith(opt.suffix):
+                # Work backwards from the suffix
+                before_suffix_idx = len(text) - len(opt.suffix)
+
+                # Use rstrip to find where the greedy set starts
+                greedy_start = before_suffix_idx
+                if opt.greedy_set_chars != None:
+                    prefix_plus_middle = text[:before_suffix_idx]
+                    stripped = prefix_plus_middle.rstrip(opt.greedy_set_chars)
+                    greedy_start = len(stripped)
+
+                # else: no greedy_set_chars
+
+                match_start = greedy_start
+                prefix_ok = True
+
+                # Check prefix literal
+                if prefix_ok:
+                    if text[:match_start].endswith(opt.prefix):
+                        match_start -= len(opt.prefix)
+
+                        regs = [-1] * ((group_count + 1) * 2 + 1)
+                        regs[0] = match_start
+                        regs[1] = len(text)
+                        return regs
+
+        # General case search optimization: skipping to prefix or suffix
+        if opt.prefix != "":
+            start_off = start_index
+            search_text = text
+            search_prefix = opt.prefix
+            if opt.case_insensitive_prefix:
+                search_text = input_lower
+                search_prefix = opt.prefix.lower()
+
+            # We can use find() to skip to the first potential match
+            for _ in range(len(text)):  # Loop for find() calls
+                found_idx = search_text.find(search_prefix, start_off)
+                if found_idx == -1:
+                    break
+
+                # For unanchored search with prefix literal, simple skip:
+                regs = match_regs(bytecode, text, group_count, start_index = found_idx, has_case_insensitive = has_case_insensitive, opt = None, input_lower = input_lower, word_mask = word_mask)
+                if regs:
+                    return regs
+
+                # If match failed at found_idx, skip it and look for next prefix
+                start_off = found_idx + 1
+                if start_off > len(text):
+                    break
+        elif opt.suffix != "":
+            # Prepare search parameters
+            search_text = text
+            search_suffix = opt.suffix
+
+            if opt.is_suffix_case_insensitive:
+                # To handle CI search properly, we need lower()
+                search_text = text.lower()
+                search_suffix = opt.suffix.lower()
+
+            start_off = start_index
+            for _ in range(len(text)):
+                found_idx = search_text.find(search_suffix, start_off)
+                if found_idx == -1:
+                    break
+
+                # The leftmost match must start after start_index.
+                search_start = found_idx
+                if opt.greedy_set_chars != None:
+                    # Find furthest back we can go with these chars from this suffix point
+                    prefix_data = text[start_index:found_idx]
+
+                    # If the greedy loop is case-insensitive, we must strip case-insensitively.
+                    if opt.is_greedy_case_insensitive:
+                        if input_lower != None:
+                            prefix_data = input_lower[start_index:found_idx]
+                        else:
+                            prefix_data = prefix_data.lower()
+
+                    stripped = prefix_data.rstrip(opt.greedy_set_chars)
+                    search_start = start_index + len(stripped)
+
+                if opt.prefix_set_chars != None:
+                    if search_start > start_index and text[search_start - 1] in opt.prefix_set_chars:
+                        search_start -= 1
+
+                # Now try a real search starting at search_start
+                if opt.prefix == "" and opt.prefix_set_chars == None and opt.is_suffix_disjoint:
+                    # Optimization: We know we matched everything up to suffix
+                    # because we stripped greedy_set_chars.
+                    regs = [-1] * ((group_count + 1) * 2 + 1)
+                    regs[0] = search_start
+                    regs[1] = found_idx + len(opt.suffix)
+                    return regs
+
+                regs = match_regs(bytecode, text, group_count, start_index = search_start, has_case_insensitive = has_case_insensitive, opt = None, input_lower = input_lower, word_mask = word_mask)
+                if regs:
+                    return regs
+
+                # If no match found yet, move past this suffix
+                start_off = found_idx + 1
+                if start_off > len(text):
+                    break
+
+            return None
+
     num_regs = (group_count + 1) * 2
     return execute(bytecode, text, num_regs, start_index = start_index, anchored = False, has_case_insensitive = has_case_insensitive, input_lower = input_lower, word_mask = word_mask)
 
-def match_regs(bytecode, text, group_count, start_index = 0, has_case_insensitive = False, input_lower = None, word_mask = None):
+def match_regs(bytecode, text, group_count, start_index = 0, has_case_insensitive = False, opt = None, input_lower = None, word_mask = None):
+    """Executes a match returning registers.
+
+    Args:
+      bytecode: The bytecode.
+      text: The text.
+      group_count: Number of groups.
+      start_index: Start index.
+      has_case_insensitive: CI flag.
+      opt: Optimization data.
+      input_lower: Pre-calculated lowercase input string.
+      word_mask: Pre-calculated word character mask.
+
+    Returns:
+      List of registers (start/end indices) or None.
+    """
+    if input_lower == None and has_case_insensitive:
+        input_lower = text.lower()
+
+    # Fast path optimization
+    if opt:
+        # Simple anchored prefix match
+        check_text = text
+        check_prefix = opt.prefix
+        if opt.case_insensitive_prefix:
+            check_text = input_lower
+            check_prefix = opt.prefix.lower()
+
+        if check_text.startswith(check_prefix, start_index):
+            match_end = start_index + len(opt.prefix)
+            fast_path_ok = True
+
+            # 1. Match prefix_set_chars (exactly once)
+            if opt.prefix_set_chars != None:
+                if match_end < len(text) and text[match_end] in opt.prefix_set_chars:
+                    match_end += 1
+                else:
+                    fast_path_ok = False
+
+            # 2. Match greedy_set_chars and suffix
+            if fast_path_ok:
+                if opt.is_anchored_end:
+                    # Must match suffix at the end and greedy_set in between
+                    if text.endswith(opt.suffix):
+                        middle_start = match_end
+                        middle_end = len(text) - len(opt.suffix)
+                        if middle_end >= middle_start:
+                            if opt.greedy_set_chars != None:
+                                middle = text[middle_start:middle_end]
+                                if len(middle.lstrip(opt.greedy_set_chars)) == 0:
+                                    match_end = len(text)
+                                else:
+                                    fast_path_ok = False
+                            elif middle_start == middle_end:
+                                match_end = len(text)
+                            else:
+                                fast_path_ok = False
+                        else:
+                            fast_path_ok = False
+                    else:
+                        fast_path_ok = False
+                else:
+                    # Not anchored at end
+                    if opt.greedy_set_chars != None:
+                        rest = text[match_end:]
+
+                        # If there is a suffix, we only support it in the fast path
+                        # if it's anchored at the end (handled above) or if it's empty.
+                        # Greedy match the rest.
+                        if opt.suffix == "":
+                            stripped = rest.lstrip(opt.greedy_set_chars)
+                            match_end += len(rest) - len(stripped)
+                        else:
+                            # Complex case: ^\d+abc (not anchored at end)
+                            fast_path_ok = False
+                    else:
+                        # No greedy set, just prefix(+set) and suffix
+                        if text[match_end:].startswith(opt.suffix):
+                            match_end += len(opt.suffix)
+                        else:
+                            fast_path_ok = False
+
+            if fast_path_ok:
+                regs = [-1] * ((group_count + 1) * 2 + 1)
+                regs[0] = start_index
+                regs[1] = match_end
+                return regs
+
     num_regs = (group_count + 1) * 2
     return execute(bytecode, text, num_regs, start_index = start_index, anchored = True, has_case_insensitive = has_case_insensitive, input_lower = input_lower, word_mask = word_mask)
 
-def fullmatch_regs(bytecode, text, group_count, start_index = 0, has_case_insensitive = False, input_lower = None, word_mask = None):
+def fullmatch_regs(bytecode, text, group_count, start_index = 0, has_case_insensitive = False, opt = None, input_lower = None, word_mask = None):
     """Executes a full match returning registers.
 
     Args:
@@ -451,12 +718,61 @@ def fullmatch_regs(bytecode, text, group_count, start_index = 0, has_case_insens
       group_count: Number of groups.
       start_index: Start index.
       has_case_insensitive: CI flag.
-      input_lower: Pre-lowered text.
-      word_mask: Pre-calculated word mask.
+      opt: Optimization data.
+      input_lower: Pre-calculated lowercase input string.
+      word_mask: Pre-calculated word character mask.
 
     Returns:
       List of registers (start/end indices) or None.
     """
+    if input_lower == None and has_case_insensitive:
+        input_lower = text.lower()
+
+    # Fast path optimization
+    if opt:
+        # fullmatch() MUST match the entire string from start_index.
+        # So it behaves like it has an implicit $ anchor.
+        check_text = text
+        check_prefix = opt.prefix
+        check_suffix = opt.suffix
+        if opt.case_insensitive_prefix:
+            check_text = input_lower
+            check_prefix = opt.prefix.lower()
+            check_suffix = opt.suffix.lower()
+
+        if check_text.startswith(check_prefix, start_index) and check_text.endswith(check_suffix):
+            match_end = start_index + len(opt.prefix)
+            fast_path_ok = True
+
+            if opt.prefix_set_chars != None:
+                if match_end < len(text) and check_text[match_end] in opt.prefix_set_chars:
+                    match_end += 1
+                else:
+                    fast_path_ok = False
+
+            if fast_path_ok:
+                middle_start = match_end
+                middle_end = len(text) - len(opt.suffix)
+                if middle_end >= middle_start:
+                    if opt.greedy_set_chars != None:
+                        middle = check_text[middle_start:middle_end]
+                        if len(middle.lstrip(opt.greedy_set_chars)) == 0:
+                            match_end = len(text)
+                        else:
+                            fast_path_ok = False
+                    elif middle_start == middle_end:
+                        match_end = len(text)
+                    else:
+                        fast_path_ok = False
+                else:
+                    fast_path_ok = False
+
+            if fast_path_ok and match_end == len(text):
+                regs = [-1] * ((group_count + 1) * 2 + 1)
+                regs[0] = start_index
+                regs[1] = match_end
+                return regs
+
     num_regs = (group_count + 1) * 2
     regs = execute(bytecode, text, num_regs, start_index = start_index, anchored = True, has_case_insensitive = has_case_insensitive, input_lower = input_lower, word_mask = word_mask)
     if regs and regs[1] != len(text):
@@ -565,166 +881,10 @@ def search_bytecode(bytecode, text, named_groups, group_count, start_index = 0, 
     Returns:
       A MatchObject or None.
     """
-
-    if input_lower == None and has_case_insensitive:
-        input_lower = text.lower()
-
-    # Fast path optimization
-    if opt:
-        if opt.is_anchored_start:
-            # If anchored at start, search is just match
-            return match_bytecode(bytecode, text, named_groups, group_count, start_index = start_index, has_case_insensitive = has_case_insensitive, opt = opt)
-
-        if opt.is_anchored_end and not has_case_insensitive:
-            # Case: ...sets...suffix$
-            if text.endswith(opt.suffix):
-                # Work backwards from the suffix
-                before_suffix_idx = len(text) - len(opt.suffix)
-
-                # Use rstrip to find where the greedy set starts
-                greedy_start = before_suffix_idx
-                if opt.greedy_set_chars != None:
-                    prefix_plus_middle = text[:before_suffix_idx]
-                    stripped = prefix_plus_middle.rstrip(opt.greedy_set_chars)
-                    greedy_start = len(stripped)
-
-                # else: no greedy_set_chars
-
-                # Check prefix_set_chars (one char)
-                # Removed this block, as the logic here appears to incorrectly handle cases where
-                # opt.prefix is empty and prefix_set_chars describes the start of the greedy part.
-                # The greedy_start calculation from rstrip is sufficient in such scenarios.
-                match_start = greedy_start
-                prefix_ok = True
-
-                # Check prefix literal
-                if prefix_ok:
-                    if text[:match_start].endswith(opt.prefix):
-                        match_start -= len(opt.prefix)
-
-                        regs = [-1] * ((group_count + 1) * 2 + 1)
-                        regs[0] = match_start
-                        regs[1] = len(text)
-                        compiled = struct(
-                            bytecode = bytecode,
-                            named_groups = named_groups,
-                            group_count = group_count,
-                            pattern = None,
-                            has_case_insensitive = has_case_insensitive,
-                            opt = opt,
-                        )
-                        return MatchObject(text, regs, compiled, start_index, len(text))
-
-        # General case search optimization: skipping to prefix or suffix
-        if opt.prefix != "":
-            start_off = start_index
-            search_text = text
-            search_prefix = opt.prefix
-            if opt.case_insensitive_prefix:
-                search_text = input_lower
-                search_prefix = opt.prefix.lower()
-
-            # We can use find() to skip to the first potential match
-            for _ in range(len(text)):  # Loop for find() calls
-                found_idx = search_text.find(search_prefix, start_off)
-                if found_idx == -1:
-                    break
-
-                # For unanchored search with prefix literal, simple skip:
-                regs = match_regs(bytecode, text, group_count, start_index = found_idx, has_case_insensitive = has_case_insensitive, input_lower = input_lower, word_mask = word_mask)
-                if regs:
-                    compiled = struct(
-                        bytecode = bytecode,
-                        named_groups = named_groups,
-                        group_count = group_count,
-                        pattern = None,
-                        has_case_insensitive = has_case_insensitive,
-                        opt = opt,
-                    )
-                    return MatchObject(text, regs, compiled, start_index, len(text))
-
-                # If match failed at found_idx, skip it and look for next prefix
-                start_off = found_idx + 1
-                if start_off > len(text):
-                    break
-        elif opt.suffix != "":
-            # Prepare search parameters
-            search_text = text
-            search_suffix = opt.suffix
-
-            if opt.is_suffix_case_insensitive:
-                # To handle CI search properly, we need lower()
-                # But creating text.lower() is O(N).
-                # We do it once here.
-                search_text = text.lower()
-                search_suffix = opt.suffix.lower()
-
-            start_off = start_index
-            for _ in range(len(text)):
-                found_idx = search_text.find(search_suffix, start_off)
-                if found_idx == -1:
-                    break
-
-                # The leftmost match must start after start_index.
-                search_start = found_idx
-                if opt.greedy_set_chars != None:
-                    # Find furthest back we can go with these chars from this suffix point
-                    prefix_data = text[start_index:found_idx]
-
-                    # If the greedy loop is case-insensitive, we must strip case-insensitively.
-                    # The greedy_set_chars are already lowercase if the loop was CI.
-                    if opt.is_greedy_case_insensitive:
-                        if input_lower != None:
-                            prefix_data = input_lower[start_index:found_idx]
-                        else:
-                            prefix_data = prefix_data.lower()
-
-                    stripped = prefix_data.rstrip(opt.greedy_set_chars)
-                    search_start = start_index + len(stripped)
-
-                if opt.prefix_set_chars != None:
-                    if search_start > start_index and text[search_start - 1] in opt.prefix_set_chars:
-                        search_start -= 1
-
-                # Now try a real search starting at search_start
-                if opt.prefix == "" and opt.prefix_set_chars == None and opt.is_suffix_disjoint:
-                    # Optimization: We know we matched everything up to suffix
-                    # because we stripped greedy_set_chars.
-                    regs = [-1] * ((group_count + 1) * 2 + 1)
-                    regs[0] = search_start
-                    regs[1] = found_idx + len(opt.suffix)
-                    compiled = struct(
-                        bytecode = bytecode,
-                        named_groups = named_groups,
-                        group_count = group_count,
-                        pattern = None,
-                        has_case_insensitive = has_case_insensitive,
-                        opt = opt,
-                    )
-                    return MatchObject(text, regs, compiled, start_index, len(text))
-
-                regs = match_regs(bytecode, text, group_count, start_index = search_start, has_case_insensitive = has_case_insensitive, input_lower = input_lower, word_mask = word_mask)
-                if regs:
-                    compiled = struct(
-                        bytecode = bytecode,
-                        named_groups = named_groups,
-                        group_count = group_count,
-                        pattern = None,
-                        has_case_insensitive = has_case_insensitive,
-                        opt = opt,
-                    )
-                    return MatchObject(text, regs, compiled, start_index, len(text))
-
-                # If no match found yet, move past this suffix
-                start_off = found_idx + 1
-                if start_off > len(text):
-                    break
-
-            return None
-
-    regs = search_regs(bytecode, text, group_count, start_index = start_index, has_case_insensitive = has_case_insensitive, input_lower = input_lower, word_mask = word_mask)
+    regs = search_regs(bytecode, text, group_count, start_index = start_index, has_case_insensitive = has_case_insensitive, opt = opt, input_lower = input_lower, word_mask = word_mask)
     if not regs:
         return None
+
     compiled = struct(
         bytecode = bytecode,
         named_groups = named_groups,
@@ -752,93 +912,10 @@ def match_bytecode(bytecode, text, named_groups, group_count, start_index = 0, h
     Returns:
       A MatchObject or None.
     """
-
-    if input_lower == None and has_case_insensitive:
-        input_lower = text.lower()
-
-    # Fast path optimization
-    if opt:
-        # Simple anchored prefix match
-        check_text = text
-        check_prefix = opt.prefix
-        if opt.case_insensitive_prefix:
-            check_text = input_lower
-            check_prefix = opt.prefix.lower()
-
-        if check_text.startswith(check_prefix, start_index):
-            match_end = start_index + len(opt.prefix)
-            fast_path_ok = True
-
-            # 1. Match prefix_set_chars (exactly once)
-            if opt.prefix_set_chars != None:
-                if match_end < len(text) and text[match_end] in opt.prefix_set_chars:
-                    match_end += 1
-                else:
-                    fast_path_ok = False
-
-            # 2. Match greedy_set_chars and suffix
-            if fast_path_ok:
-                if opt.is_anchored_end:
-                    # Must match suffix at the end and greedy_set in between
-                    if text.endswith(opt.suffix):
-                        middle_start = match_end
-                        middle_end = len(text) - len(opt.suffix)
-                        if middle_end >= middle_start:
-                            if opt.greedy_set_chars != None:
-                                middle = text[middle_start:middle_end]
-                                if len(middle.lstrip(opt.greedy_set_chars)) == 0:
-                                    match_end = len(text)
-                                else:
-                                    fast_path_ok = False
-                            elif middle_start == middle_end:
-                                match_end = len(text)
-                            else:
-                                fast_path_ok = False
-                        else:
-                            fast_path_ok = False
-                    else:
-                        fast_path_ok = False
-                else:
-                    # Not anchored at end
-                    if opt.greedy_set_chars != None:
-                        rest = text[match_end:]
-
-                        # If there is a suffix, we only support it in the fast path
-                        # if it's anchored at the end (handled above) or if it's empty.
-                        # Greedy match the rest.
-                        if opt.suffix == "":
-                            stripped = rest.lstrip(opt.greedy_set_chars)
-                            match_end += len(rest) - len(stripped)
-                        else:
-                            # Complex case: ^\d+abc (not anchored at end)
-                            # Fast path only if greedy set and suffix are disjoint?
-                            # For now, let's bail on fast path if there is a non-anchored suffix
-                            # because we can't easily tell where it should start without backtracking.
-                            fast_path_ok = False
-                    else:
-                        # No greedy set, just prefix(+set) and suffix
-                        if text[match_end:].startswith(opt.suffix):
-                            match_end += len(opt.suffix)
-                        else:
-                            fast_path_ok = False
-
-            if fast_path_ok:
-                regs = [-1] * ((group_count + 1) * 2 + 1)
-                regs[0] = start_index
-                regs[1] = match_end
-                compiled = struct(
-                    bytecode = bytecode,
-                    named_groups = named_groups,
-                    group_count = group_count,
-                    pattern = None,
-                    has_case_insensitive = has_case_insensitive,
-                    opt = opt,
-                )
-                return MatchObject(text, regs, compiled, start_index, len(text))
-
-    regs = match_regs(bytecode, text, group_count, start_index = start_index, has_case_insensitive = has_case_insensitive, input_lower = input_lower, word_mask = word_mask)
+    regs = match_regs(bytecode, text, group_count, start_index = start_index, has_case_insensitive = has_case_insensitive, opt = opt, input_lower = input_lower, word_mask = word_mask)
     if not regs:
         return None
+
     compiled = struct(
         bytecode = bytecode,
         named_groups = named_groups,
@@ -866,63 +943,10 @@ def fullmatch_bytecode(bytecode, text, named_groups, group_count, start_index = 
     Returns:
       A MatchObject or None.
     """
-
-    # Fast path optimization
-    if opt:
-        # fullmatch() MUST match the entire string from start_index.
-        # So it behaves like it has an implicit $ anchor.
-        check_text = text
-        check_prefix = opt.prefix
-        check_suffix = opt.suffix
-        if opt.case_insensitive_prefix:
-            check_text = input_lower
-            check_prefix = opt.prefix.lower()
-            check_suffix = opt.suffix.lower()
-
-        if check_text.startswith(check_prefix, start_index) and check_text.endswith(check_suffix):
-            match_end = start_index + len(opt.prefix)
-            fast_path_ok = True
-
-            if opt.prefix_set_chars != None:
-                if match_end < len(text) and check_text[match_end] in opt.prefix_set_chars:
-                    match_end += 1
-                else:
-                    fast_path_ok = False
-
-            if fast_path_ok:
-                middle_start = match_end
-                middle_end = len(text) - len(opt.suffix)
-                if middle_end >= middle_start:
-                    if opt.greedy_set_chars != None:
-                        middle = check_text[middle_start:middle_end]
-                        if len(middle.lstrip(opt.greedy_set_chars)) == 0:
-                            match_end = len(text)
-                        else:
-                            fast_path_ok = False
-                    elif middle_start == middle_end:
-                        match_end = len(text)
-                    else:
-                        fast_path_ok = False
-                else:
-                    fast_path_ok = False
-
-            if fast_path_ok and match_end == len(text):
-                regs = [-1] * ((group_count + 1) * 2 + 1)
-                regs[0] = start_index
-                regs[1] = match_end
-                compiled = struct(
-                    bytecode = bytecode,
-                    named_groups = named_groups,
-                    group_count = group_count,
-                    pattern = None,
-                    has_case_insensitive = has_case_insensitive,
-                    opt = opt,
-                )
-                return MatchObject(text, regs, compiled, start_index, len(text))
-
-    regs = fullmatch_regs(bytecode, text, group_count, start_index = start_index, has_case_insensitive = has_case_insensitive, input_lower = input_lower, word_mask = word_mask)
+    regs = fullmatch_regs(bytecode, text, group_count, start_index = start_index, has_case_insensitive = has_case_insensitive, opt = opt, input_lower = input_lower, word_mask = word_mask)
     if not regs:
         return None
+
     compiled = struct(
         bytecode = bytecode,
         named_groups = named_groups,

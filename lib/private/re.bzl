@@ -7,10 +7,13 @@ load(
 )
 load(
     "//lib/private:vm.bzl",
-    "expand_replacement",
+    "MatchObject",
+    "expand_template",
     "fullmatch_bytecode",
     "match_bytecode",
+    "parse_replacement_template",
     "search_bytecode",
+    "search_regs",
 )
 
 # Types
@@ -114,15 +117,20 @@ def findall(pattern, text):
     start_index = 0
     text_len = len(text)
 
+    # Cache access to frequently used values
+    bytecode = compiled.bytecode
+    has_case_insensitive = compiled.has_case_insensitive
+    opt = compiled.opt
+
     # Simulate while loop
     # Max possible matches is len(text) + 1 (for empty matches)
     for _ in range(text_len + 2):
-        m = search_bytecode(compiled.bytecode, text, compiled.named_groups, compiled.group_count, start_index = start_index, has_case_insensitive = compiled.has_case_insensitive, opt = compiled.opt)
-        if not m:
+        regs = search_regs(bytecode, text, group_count, start_index = start_index, has_case_insensitive = has_case_insensitive, opt = opt)
+        if not regs:
             break
 
-        match_start = m.start()
-        match_end = m.end()
+        match_start = regs[0]
+        match_end = regs[1]
 
         if match_start == -1:
             # Should not happen if execute returns non-None
@@ -133,7 +141,15 @@ def findall(pattern, text):
             matches += [text[match_start:match_end]]
         else:
             # Return groups
-            matches += [m.groups(default = None)]
+            groups = []
+            for i in range(1, group_count + 1):
+                s = regs[i * 2]
+                e = regs[i * 2 + 1]
+                if s == -1:
+                    groups += [None]
+                else:
+                    groups += [text[s:e]]
+            matches += [tuple(groups)]
 
         # Advance start_index
         if match_end > match_start:
@@ -165,28 +181,36 @@ def sub(pattern, repl, text, count = 0):
     # We need named groups for \g<name>, so we need the compiled object.
     compiled = compile(pattern)
 
-    # Reuse findall logic but we need the match objects (start/end indices)
-    # findall returns strings/tuples, which loses index info.
-    # So we duplicate the loop here or refactor findall to return match objects.
-    # Let's duplicate loop for now to avoid breaking findall API.
-
     res_parts = []
     last_idx = 0
     start_index = 0
     text_len = len(text)
     matches_found = 0
 
+    # Cache values
+    bytecode = compiled.bytecode
+    group_count = compiled.group_count
+    has_case_insensitive = compiled.has_case_insensitive
+    opt = compiled.opt
+    named_groups = compiled.named_groups
+
+    # Pre-parse replacement string if it's a string
+    repl_template = None
+    if type(repl) != _FUNCTION_TYPE:
+        repl_template = parse_replacement_template(repl, named_groups)
+
     # Simulate while loop
     for _ in range(text_len + 2):
         if count > 0 and matches_found >= count:
             break
 
-        m = search_bytecode(compiled.bytecode, text, compiled.named_groups, compiled.group_count, start_index = start_index, has_case_insensitive = compiled.has_case_insensitive, opt = compiled.opt)
-        if not m:
+        # Use search_regs to avoid creating MatchObject
+        regs = search_regs(bytecode, text, group_count, start_index = start_index, has_case_insensitive = has_case_insensitive, opt = opt)
+        if not regs:
             break
 
-        match_start = m.start()
-        match_end = m.end()
+        match_start = regs[0]
+        match_end = regs[1]
 
         # Append text before match
         res_parts += [text[last_idx:match_start]]
@@ -194,13 +218,25 @@ def sub(pattern, repl, text, count = 0):
         # Calculate replacement
         match_str = text[match_start:match_end]
 
-        groups = m.groups(default = None)
+        # Construct groups tuple only if needed
+
+        groups = []
+        for i in range(1, group_count + 1):
+            s = regs[i * 2]
+            e = regs[i * 2 + 1]
+            if s == -1:
+                groups += [None]
+            else:
+                groups += [text[s:e]]
+        groups = tuple(groups)
 
         if type(repl) == _FUNCTION_TYPE:
-            # m is already a MatchObject-like struct
+            # Slow path: Create proper match object using vm.MatchObject
+            # Use the loaded MatchObject
+            m = MatchObject(text, regs, compiled, start_index, text_len)
             replacement = repl(m)
         else:
-            replacement = expand_replacement(repl, match_str, groups, compiled.named_groups)
+            replacement = expand_template(repl_template, match_str, groups)
 
         res_parts += [replacement]
 
@@ -240,17 +276,23 @@ def split(pattern, text, maxsplit = 0):
     text_len = len(text)
     splits_found = 0
 
+    # Cache values
+    bytecode = compiled.bytecode
+    group_count = compiled.group_count
+    has_case_insensitive = compiled.has_case_insensitive
+    opt = compiled.opt
+
     # Simulate while loop
     for _ in range(text_len + 2):
         if maxsplit > 0 and splits_found >= maxsplit:
             break
 
-        m = search_bytecode(compiled.bytecode, text, compiled.named_groups, compiled.group_count, start_index = start_index, has_case_insensitive = compiled.has_case_insensitive, opt = compiled.opt)
-        if not m:
+        regs = search_regs(bytecode, text, group_count, start_index = start_index, has_case_insensitive = has_case_insensitive, opt = opt)
+        if not regs:
             break
 
-        match_start = m.start()
-        match_end = m.end()
+        match_start = regs[0]
+        match_end = regs[1]
 
         if match_start == -1:
             break
@@ -259,9 +301,14 @@ def split(pattern, text, maxsplit = 0):
         res_parts += [text[last_idx:match_start]]
 
         # If capturing groups, append them too (Python behavior)
-        if compiled.group_count > 0:
-            for i in range(1, compiled.group_count + 1):
-                res_parts += [m.group(i)]
+        if group_count > 0:
+            for i in range(1, group_count + 1):
+                s = regs[i * 2]
+                e = regs[i * 2 + 1]
+                if s == -1:
+                    res_parts += [None]
+                else:
+                    res_parts += [text[s:e]]
 
         last_idx = match_end
         splits_found += 1
