@@ -367,9 +367,13 @@ def _compile_bracket_class(pattern, i, pattern_len, case_insensitive):
         i += 1
 
     builder = _new_set_builder(case_insensitive = case_insensitive)
+    first = True
     for _ in range(pattern_len):
-        if i >= pattern_len or pattern[i] == "]":
+        if i >= pattern_len:
             break
+        if pattern[i] == "]" and not first:
+            break
+        first = False
 
         atom, new_i = _parse_set_atom(pattern, i, pattern_len)
 
@@ -733,15 +737,9 @@ def _compile_regex(pattern, start_group_id = 0):
     return instructions, named_groups, group_count, has_case_insensitive
 
 def _optimize_bytecode(instructions):
-    """Runs bytecode optimization passes."""
-    if not instructions:
-        return []
+    """Optimizes instructions for performance."""
 
-    # Pass 1: Optimize greedy loops (x* followed by disjoint y)
-    instructions = _optimize_greedy_loops(instructions)
-
-    # Pass 2: Merge consecutive characters
-    return _merge_consecutive_chars(instructions)
+    return _optimize_greedy_loops(instructions)
 
 def _is_disjoint(body_inst, next_inst):
     """Returns True if the body instruction is disjoint from the next instruction."""
@@ -816,29 +814,31 @@ def _optimize_greedy_loops(instructions):
             if body_pc > i and body_pc < num_insts and exit_pc > i and exit_pc < num_insts:
                 body_inst = instructions[body_pc]
 
-                # Pattern: Body -> Jump(Split)
-                # Check if body is followed by Jump back to i
-                jump_pc = body_pc + 1
-                if jump_pc < num_insts and instructions[jump_pc][0] == OP_JUMP and instructions[jump_pc][2] == i:
-                    # Pattern: Exit -> Continuation
-                    exit_inst = instructions[exit_pc]
+                # Pattern 1: Body -> Jump(Split) (Legacy)
+                # Pattern 2: Body -> Split(Split, Exit) (New)
+                # Check if body is followed by loop back to i
+                loop_back_pc = body_pc + 1
+                if loop_back_pc < num_insts:
+                    loop_inst = instructions[loop_back_pc]
+                    if (loop_inst[0] == OP_JUMP and loop_inst[2] == i) or \
+                       (loop_inst[0] == OP_SPLIT and loop_inst[2] == i):
+                        # Pattern: Exit -> Continuation
+                        exit_inst = instructions[exit_pc]
 
-                    if _is_disjoint(body_inst, exit_inst):
-                        # Optimize!
-                        # Convert body to string chars
-                        chars = ""
-                        if body_inst[0] == OP_CHAR:
-                            chars = body_inst[1]
-                        else:  # OP_SET
-                            chars = body_inst[1][0].all_chars
+                        if _is_disjoint(body_inst, exit_inst):
+                            # Optimize!
+                            # Convert body to string chars
+                            chars = ""
+                            if body_inst[0] == OP_CHAR:
+                                chars = body_inst[1]
+                            else:  # OP_SET
+                                chars = body_inst[1][0].all_chars
 
-                        # Emit OP_GREEDY_LOOP
-                        new_insts += [(OP_GREEDY_LOOP, chars, exit_pc, None)]
-
-                        if body_pc == i + 1:
-                            skip = 2  # Skip body and jump
-
-                        continue
+                            # Emit OP_GREEDY_LOOP
+                            # Emit OP_GREEDY_LOOP
+                            new_insts += [(OP_GREEDY_LOOP, chars, exit_pc, None)]
+                            skip = 2  # Skip body and loop_back
+                            continue
 
         new_insts += [inst]
 
@@ -880,81 +880,6 @@ def _optimize_greedy_loops(instructions):
         final += [(itype, val, new_pc1, new_pc2)]
 
     return final
-
-# buildifier: disable=list-append
-def _merge_consecutive_chars(instructions):
-    """Merges consecutive characters into strings to speed up matching."""
-    if not instructions:
-        return []
-
-    # 1. Find all jump targets to avoid merging across them
-    targets = {0: True, len(instructions): True}
-    for inst in instructions:
-        itype, _, pc1, pc2 = inst
-        if itype == OP_JUMP:
-            targets[pc1] = True
-        elif itype == OP_SPLIT:
-            targets[pc1] = True
-            targets[pc2] = True
-
-    # 2. Merge consecutive chars
-    new_insts = []
-    old_to_new = {}
-
-    num_insts = len(instructions)
-    skip = 0
-    for i in range(num_insts):
-        if skip > 0:
-            skip -= 1
-            continue
-
-        old_to_new[i] = len(new_insts)
-        inst = instructions[i]
-        itype, val, pc1, pc2 = inst
-
-        if itype == OP_CHAR or itype == OP_CHAR_I:
-            # Try to merge runs of the same character type that are not jump targets
-            s = val
-            j = i + 1
-
-            # Simulation of while loop
-            for _ in range(num_insts - i - 1):
-                if j >= num_insts or (j in targets):
-                    break
-                next_inst = instructions[j]
-                if next_inst[0] == itype:
-                    s += next_inst[1]
-                    j += 1
-                else:
-                    break
-
-            if len(s) > 1:
-                new_type = OP_STRING if itype == OP_CHAR else OP_STRING_I
-                new_insts += [(new_type, s, None, None)]
-                skip = j - i - 1
-                continue
-
-        new_insts += [inst]
-
-    # Final "virtual" instruction for matches at the end
-    old_to_new[num_insts] = len(new_insts)
-
-    # Fill in holes in old_to_new (for merged instructions)
-    # Jumps to a merged instruction should go to the next valid instruction
-    # OR to the start of the merge. For now, let's map them to the next instruction.
-    for i in range(num_insts - 1, -1, -1):
-        if i not in old_to_new:
-            old_to_new[i] = old_to_new[i + 1]
-
-    # 3. Update PC offsets
-    final_insts = []
-    for inst in new_insts:
-        itype, val, pc1, pc2 = inst
-        new_pc1 = old_to_new[pc1] if pc1 != None else None
-        new_pc2 = old_to_new[pc2] if pc2 != None else None
-        final_insts += [(itype, val, new_pc1, new_pc2)]
-
-    return final_insts
 
 # buildifier: disable=list-append
 def _build_alt_tree(instructions, group_ctx):
@@ -1000,38 +925,51 @@ def _copy_insts(insts, atom_start, new_start):
 # buildifier: disable=list-append
 def _apply_question_mark(insts, atom_start, lazy = False):
     """Applies ? logic. Lazy=True tries skipping first."""
-    jump_to_end_idx = len(insts)
-    insts += [(OP_JUMP, None, -1, None)]
-    orig_first = insts[atom_start]
-    reloc_idx = len(insts)
-    insts += [orig_first]
-    if atom_start + 1 < jump_to_end_idx:
-        insts += [(OP_JUMP, None, atom_start + 1, None)]
+    new_block = _copy_insts(insts, atom_start, atom_start + 1)
+
+    # Remove original atom
+    for _ in range(len(insts) - atom_start):
+        insts.pop()
+
+    split_pc = len(insts)  # atom_start
+    insts += [None]  # Placeholder
+
+    atom_pc = len(insts)
+    insts += new_block
+
     skip_target = len(insts)
 
-    # Greedy: Try reloc (match) then skip. Lazy: Try skip then reloc.
     if lazy:
-        insts[atom_start] = (OP_SPLIT, None, skip_target, reloc_idx)
+        insts[split_pc] = (OP_SPLIT, None, skip_target, atom_pc)
     else:
-        insts[atom_start] = (OP_SPLIT, None, reloc_idx, skip_target)
-    insts[jump_to_end_idx] = (OP_JUMP, None, skip_target, None)
+        insts[split_pc] = (OP_SPLIT, None, atom_pc, skip_target)
 
 # buildifier: disable=list-append
 def _apply_star(insts, atom_start, lazy = False):
     """Applies * logic. Lazy=True tries skipping first."""
-    orig_first = insts[atom_start]
-    reloc_idx = len(insts)
-    insts += [orig_first]
-    if len(insts) - 1 > atom_start + 1:
-        insts += [(3, None, atom_start + 1, None)]
-    insts += [(OP_JUMP, None, atom_start, None)]
+    new_block = _copy_insts(insts, atom_start, atom_start + 1)
+
+    # Remove original atom
+    for _ in range(len(insts) - atom_start):
+        insts.pop()
+
+    split_pc = len(insts)  # atom_start
+    insts += [None]  # Placeholder
+
+    atom_pc = len(insts)
+    insts += new_block
+
+    # Jump back replaced by SPLIT to allow one extra empty match for groups
+    end_split_pc = len(insts)
+    insts += [None]  # Placeholder
     skip_target = len(insts)
 
-    # Greedy: Try reloc (loop) then skip. Lazy: Try skip then reloc.
     if lazy:
-        insts[atom_start] = (OP_SPLIT, None, skip_target, reloc_idx)
+        insts[end_split_pc] = (OP_SPLIT, None, skip_target, split_pc)
+        insts[split_pc] = (OP_SPLIT, None, skip_target, atom_pc)
     else:
-        insts[atom_start] = (OP_SPLIT, None, reloc_idx, skip_target)
+        insts[end_split_pc] = (OP_SPLIT, None, split_pc, skip_target)
+        insts[split_pc] = (OP_SPLIT, None, atom_pc, skip_target)
 
 # buildifier: disable=list-append
 def _apply_plus(insts, atom_start, lazy = False):
@@ -1192,10 +1130,12 @@ def _get_epsilon_closure(instructions, input_str, input_len, start_pc, start_reg
 
         # Inner loop to follow a thread's epsilon transitions.
         for _ in range(inner_limit):
-            # Check if already visited in this generation
-            if visited[pc] == visited_gen:
-                break
-            visited[pc] = visited_gen
+            if visited[pc] < visited_gen:
+                visited[pc] = visited_gen
+            elif visited[pc] == visited_gen:
+                visited[pc] = visited_gen + 1
+            else:
+                continue
 
             if pc >= num_inst:
                 break
@@ -1292,54 +1232,32 @@ def _get_epsilon_closure(instructions, input_str, input_len, start_pc, start_reg
     return reachable
 
 # buildifier: disable=list-append
-def _process_batch(instructions, batch, char, char_lower, char_idx, input_str, greedy_cache):
+def _process_batch(instructions, batch, char, char_lower):
     """Processes a batch of threads against the current character.
 
-    Returns (next_threads, match_regs).
+    batch is a list of (pc, regs) in priority order.
+    Returns (next_threads_list, best_match_regs).
     """
+    next_threads_list = []
+    next_threads_dict = {}
+    best_match_regs = None
 
-    next_threads_list = []  # order preserved
-    match_regs = None
-
-    # Sort batch by rank to preserve priority
-    # Rank is a tuple: (start_index, nfa_order)
-    # Starlark sort is stable.
-    # Higher priority (lower rank) threads first.
-    sorted_batch = sorted(batch, key = lambda t: t[2])
-
-    next_threads_dict = {}  # Deduplication
-
-    for pc, regs, rank in sorted_batch:
+    for pc, regs in batch:
         inst = instructions[pc]
         itype = inst[0]
 
         if itype == OP_MATCH:
-            if match_regs == None:
-                match_regs = regs
+            best_match_regs = regs
             break
 
         if char == None and itype != OP_MATCH:
             continue
 
         match_found = False
-        target_idx = char_idx + 1
-
         if itype == OP_CHAR:
             match_found = (inst[1] == char)
         elif itype == OP_CHAR_I:
             match_found = (inst[1] == char_lower)
-        elif itype == OP_STRING:
-            s = inst[1]
-            s_len = len(s)
-            if input_str[char_idx:char_idx + s_len] == s:
-                match_found = True
-                target_idx = char_idx + s_len
-        elif itype == OP_STRING_I:
-            s_lower = inst[1]
-            s_len = len(s_lower)
-            if input_str[char_idx:char_idx + s_len].lower() == s_lower:
-                match_found = True
-                target_idx = char_idx + s_len
         elif itype == OP_ANY:
             match_found = True
         elif itype == OP_ANY_NO_NL:
@@ -1351,179 +1269,87 @@ def _process_batch(instructions, batch, char, char_lower, char_idx, input_str, g
             set_struct, is_negated = inst[1]
             match_found = (_char_in_set(set_struct, char_lower) != is_negated)
         elif itype == OP_GREEDY_LOOP:
-            # Optimized x* loop logic with Cache
-            chars = inst[1]
-            match_len = 0
-
-            # Check cache
-            # Since the loop is disjoint, the end position is invariant for a given segment.
-            # If we computed it at index I, and it ended at index E.
-            # Then at index I+1 (if char matches), it MUST also end at E.
-            # So we can just cache the absolute END position.
-            last_end = greedy_cache.get(pc, -1)
-
-            if last_end >= char_idx:
-                # Reuse cached end position
-                match_len = last_end - char_idx
-
-                # OPTIMIZATION:
-                # If this is the start of the pattern (pc == 0), implies we are in unanchored search.
-                # Since we hit the cache, a previous start index (S < char_idx) already covered this segment
-                # and ends at the SAME absolute position (last_end).
-                # The previous thread is strictly "better" (leftmost match), so this one is redundant.
-                if pc == 0:
-                    continue
-
-            else:
-                # Compute and cache
-                current_slice = input_str[char_idx:]
-                stripped = current_slice.lstrip(chars)
-                match_len = len(current_slice) - len(stripped)
-
-                # Cache the absolute end position
-                greedy_cache[pc] = char_idx + match_len
-
-            # If match_len is 0, we can't optimize here because it's equivalent to epsilon.
-            # But _get_epsilon_closure handles that.
-            # If we are here, it means we MIGHT consume.
-            # Wait, if match_len == 0, we do NOTHING?
-            # _get_epsilon_closure added (exit_pc) as epsilon transition.
-            # So the thread flow is: OP_GREEDY_LOOP -> Exit.
-            # If we are in _process_batch with OP_GREEDY_LOOP, it means we are trying to CONSUME.
-            # But OP_GREEDY_LOOP consumes as a block.
-            # If match_len > 0, we consume all of it and jump to exit_pc.
-            # If match_len == 0, we consume nothing. But we shouldn't be here?
-            # _get_epsilon_closure added (pc, regs) to reachable ONLY if match_len > 0?
-            # Let's check my previous edit to _get_epsilon_closure.
-            # Yes: if match_len > 0: reachable += [(pc, regs)]
-            # So we are guaranteed match_len > 0 here?
-            # Wait, the cache might say match_len == 0?
-            # If previously at X we found match_len > 0.
-            # At X+k, maybe match_len reaches 0.
-            # But _get_epsilon_closure checks "fresh".
-            # _get_epsilon_closure does NOT use the cache yet.
-            # So _get_epsilon_closure sees > 0.
-            # Then we come here. We check cache. Cache should agree > 0.
-
-            target_idx = char_idx + match_len
-            next_pc = inst[2]
-
-            # Add continuation.
-            # Note: We duplicate this logic from before but now with cache.
-            if next_pc not in next_threads_dict:
-                next_threads_dict[next_pc] = regs
-                next_threads_list += [(next_pc, regs, rank, target_idx)]
-
-            continue
+            match_found = (char in inst[1])
 
         if match_found:
-            next_pc = pc + 1
-            if next_pc not in next_threads_dict:
-                next_threads_dict[next_pc] = regs
-                next_threads_list += [(next_pc, regs, rank, target_idx)]
+            next_pc = pc
+            if itype != OP_GREEDY_LOOP:
+                next_pc = pc + 1
 
-    return next_threads_list, match_regs
+            if next_pc not in next_threads_dict:
+                next_threads_dict[next_pc] = True
+                next_threads_list += [(next_pc, regs)]
+
+    return next_threads_list, best_match_regs
 
 # buildifier: disable=list-append
 def _execute_core(instructions, input_str, num_regs, start_index = 0, initial_regs = None, anchored = False, has_case_insensitive = False):
     if initial_regs == None:
-        initial_regs = [-1] * (num_regs + 1)  # +1 for lastindex
+        initial_regs = [-1] * (num_regs + 1)
 
     input_len = len(input_str)
-    input_lower = None
-    if has_case_insensitive:
-        input_lower = input_str.lower()
+    input_lower = input_str.lower() if has_case_insensitive else None
 
-    # Shared visited array for epsilon closure to avoid re-allocation
     visited = [0] * len(instructions)
-    visited_gen = 1
+    visited_gen = 0
 
-    # future_threads maps target_idx -> list of (pc, regs, rank)
-    future_threads = {}
-    greedy_cache = {}  # pc -> last_end_pos
+    current_threads = [(0, initial_regs)]
+    best_match_regs = None
 
-    # Initialize with the start condition
-    # Rank is a tuple to maintain priority.
-    # Higher priority threads have lower rank (lexicographical).
-    future_threads[start_index] = [(0, initial_regs, (start_index,))]
-
-    match_regs = None
-
-    # Main Loop: Iterate over input string
     for char_idx in range(start_index, input_len + 1):
         char = input_str[char_idx] if char_idx < input_len else None
-        char_lower = None
-        if input_lower != None and char_idx < input_len:
-            char_lower = input_lower[char_idx]
+        char_lower = input_lower[char_idx] if input_lower != None and char_idx < input_len else None
 
-        # 1. Get threads scheduled for this index
-        current_threads = []
-        visited_gen += 1
+        # Expand epsilon closure for current threads
+        visited_gen += 3  # Increase by 3 to allow up to 2 visits per PC (using idx, idx+1)
+        expanded_batch = []
 
-        # Populate current_threads from future_threads
-        # Rank counter for re-normalization to prevent tuple explosion
-        rank_counter = 0
+        # Thompson simulation maintains threads in priority order.
+        # Deduplication keeps only the highest priority path to each PC.
+        for s_pc, s_regs in current_threads:
+            closure = _get_epsilon_closure(instructions, input_str, input_len, s_pc, s_regs, char_idx, visited, visited_gen, {})
+            for c_pc, c_regs in closure:
+                expanded_batch += [(c_pc, c_regs)]
 
-        # Populate current_threads from future_threads
-        if char_idx in future_threads:
-            # Sort by rank to ensure priority is respected during epsilon closure expansion
-            def _get_rank(t):
-                return t[2]
+        if not anchored and char_idx <= input_len:
+            # Injection for unanchored search. Add PC 0 at every index.
+            # PC 0 will set regs[0] = char_idx via its SAVE 0 instruction.
+            if visited[0] < visited_gen + 2:  # Check if PC 0 has been visited less than twice in this generation
+                closure0 = _get_epsilon_closure(instructions, input_str, input_len, 0, initial_regs[:], char_idx, visited, visited_gen, {})
+                for c_pc, c_regs in closure0:
+                    expanded_batch += [(c_pc, c_regs)]
+        if not expanded_batch and anchored:
+            break
 
-            pending = sorted(future_threads.pop(char_idx), key = _get_rank)
-            for pc, regs, old_rank in pending:
-                # Call epsilon closure to expand this thread at the current index
-                closure = _get_epsilon_closure(instructions, input_str, input_len, pc, regs, char_idx, visited, visited_gen, greedy_cache)
-
-                # Assign new ranks preserving start_index and using counter for relative priority
-                start_index = old_rank[0]
-                for c_pc, c_regs in closure:
-                    current_threads += [(c_pc, c_regs, (start_index, rank_counter))]
-                    rank_counter += 1
-
-        # 2. Unanchored Search Injection
-        if not anchored:
-            # Check if PC 0 is already in visited for this generation
-            if visited[0] != visited_gen:
-                closure_pc0 = _get_epsilon_closure(instructions, input_str, input_len, 0, initial_regs[:], char_idx, visited, visited_gen, greedy_cache)
-
-                # Unanchored start gets rank (char_idx, counter)
-                # Since char_idx is the start index for this new thread.
-                for c_pc, c_regs in closure_pc0:
-                    current_threads += [(c_pc, c_regs, (char_idx, rank_counter))]
-                    rank_counter += 1
-
-        # Optimization: Stop early if no threads left
-        if not current_threads and not future_threads:
-            if match_regs or anchored or char_idx >= input_len:
-                break
-
-        # 3. Process current threads
-        # 3. Process current threads
-        # 3. Process current threads
-        res_future_list, batch_match = _process_batch(
-            instructions,
-            current_threads,
-            char,
-            char_lower,
-            char_idx,
-            input_str,
-            greedy_cache,
-        )
+        next_threads = []
+        batch_match = None
+        if expanded_batch:
+            # Process batch against character
+            next_threads, batch_match = _process_batch(
+                instructions,
+                expanded_batch,
+                char,
+                char_lower,
+            )
 
         if batch_match:
-            if match_regs == None:
-                match_regs = batch_match
-            elif batch_match[0] <= match_regs[0]:
-                match_regs = batch_match
+            new_regs = batch_match
+            new_start = new_regs[0]
 
-        # 4. Schedule future matches
-        for pc, regs, rank, target_idx in res_future_list:
-            if target_idx not in future_threads:
-                future_threads[target_idx] = []
-            future_threads[target_idx] += [(pc, regs, rank)]
+            # Leftmost priority
+            if best_match_regs == None or new_start < best_match_regs[0]:
+                best_match_regs = new_regs
+            elif new_start == best_match_regs[0]:
+                # For same start, Thompson NFA naturally finds matches in priority order.
+                # However, since we iterate character by character, we might hit multiple
+                # matches at different indices for the same start.
+                # Standard behavior is to take the LONGEST for greedy.
+                # Since char_idx is increasing, we just overwrite.
+                best_match_regs = new_regs
 
-    return match_regs
+        current_threads = next_threads
+
+    return best_match_regs
 
 def _execute(instructions, input_str, num_regs, start_index = 0, initial_regs = None, anchored = False, has_case_insensitive = False):
     return _execute_core(instructions, input_str, num_regs, start_index, initial_regs, anchored, has_case_insensitive)
@@ -1656,11 +1482,17 @@ def _optimize_matcher(instructions):
             idx += 1
 
         elif itype == OP_SPLIT:
-            # Case 3: [set]* or c* loop -> SPLIT(idx+1, idx+3), ATOM, JUMP idx
+            # Case 3: [set]* or c* loop
             if idx + 2 < len(instructions) and instructions[idx][2] == idx + 1 and instructions[idx][3] == idx + 3:
                 atom_inst = instructions[idx + 1]
-                jump_inst = instructions[idx + 2]
-                if jump_inst[0] == OP_JUMP and jump_inst[2] == idx:
+                end_inst = instructions[idx + 2]
+                is_loop = False
+                if end_inst[0] == OP_JUMP and end_inst[2] == idx:
+                    is_loop = True
+                elif end_inst[0] == OP_SPLIT and end_inst[2] == idx:
+                    is_loop = True
+
+                if is_loop:
                     chars = None
                     if atom_inst[0] in [OP_CHAR, OP_CHAR_I]:
                         chars = atom_inst[1]
@@ -1677,11 +1509,17 @@ def _optimize_matcher(instructions):
     # Example: ^\d\w*
     if prefix_set_chars != None and greedy_set_chars == None:
         if idx < len(instructions) and instructions[idx][0] == OP_SPLIT:
-            # Check for * loop: SPLIT(idx+1, idx+3), ATOM, JUMP idx
+            # Check for * loop
             if idx + 2 < len(instructions) and instructions[idx][2] == idx + 1 and instructions[idx][3] == idx + 3:
                 atom_inst = instructions[idx + 1]
-                jump_inst = instructions[idx + 2]
-                if jump_inst[0] == OP_JUMP and jump_inst[2] == idx:
+                end_inst = instructions[idx + 2]
+                is_loop = False
+                if end_inst[0] == OP_JUMP and end_inst[2] == idx:
+                    is_loop = True
+                elif end_inst[0] == OP_SPLIT and end_inst[2] == idx:
+                    is_loop = True
+
+                if is_loop:
                     chars = None
                     if atom_inst[0] in [OP_CHAR, OP_CHAR_I]:
                         chars = atom_inst[1]
@@ -1709,25 +1547,38 @@ def _optimize_matcher(instructions):
         else:
             break
 
-    # Check for end anchor
+    # Check for end anchor or save 1/match
     is_anchored_end = False
-    if idx < len(instructions) and instructions[idx][0] == OP_ANCHOR_END:
+
+    # Skip trailing saves if searching for end
+    temp_idx = idx
+    for _ in range(len(instructions)):
+        if temp_idx < len(instructions) and instructions[temp_idx][0] == OP_SAVE:
+            temp_idx += 1
+        else:
+            break
+
+    if temp_idx < len(instructions) and instructions[temp_idx][0] == OP_ANCHOR_END:
         is_anchored_end = True
-        idx += 1
+        temp_idx += 1
 
     # Check if we reached the matching end: SAVE 1, MATCH
-    if idx + 1 < len(instructions):
-        if instructions[idx][0] == OP_SAVE and instructions[idx][1] == 1:
-            if instructions[idx + 1][0] == OP_MATCH:
-                return struct(
-                    prefix = prefix,
-                    case_insensitive_prefix = case_insensitive_prefix,
-                    prefix_set_chars = prefix_set_chars,
-                    greedy_set_chars = greedy_set_chars,
-                    suffix = suffix,
-                    is_anchored_start = is_anchored_start,
-                    is_anchored_end = is_anchored_end,
-                )
+    for _ in range(len(instructions)):
+        if temp_idx < len(instructions) and instructions[temp_idx][0] == OP_SAVE:
+            temp_idx += 1
+        else:
+            break
+
+    if temp_idx < len(instructions) and instructions[temp_idx][0] == OP_MATCH:
+        return struct(
+            prefix = prefix,
+            case_insensitive_prefix = case_insensitive_prefix,
+            prefix_set_chars = prefix_set_chars,
+            greedy_set_chars = greedy_set_chars,
+            suffix = suffix,
+            is_anchored_start = is_anchored_start,
+            is_anchored_end = is_anchored_end,
+        )
 
     return None
 

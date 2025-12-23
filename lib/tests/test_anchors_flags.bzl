@@ -73,7 +73,7 @@ def run_tests_anchors_flags(env):
 
         # Word Boundary Edge Cases
         ("\\b", " ", None),  # Empty match not supported by search yet?
-        ("\\B", "a", {0: ""}),  # Wait, search("(?m)^", "a") should match.
+        ("\\B", "a", None),  # \B does not match at word boundaries 0 and 1
 
         # Flags: dotall with multiline
         ("(?ms)^a.b$", "a\nb", {0: "a\nb"}),
