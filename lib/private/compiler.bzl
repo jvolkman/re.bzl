@@ -23,6 +23,15 @@ load(
     _ORD_LOOKUP = "ORD_LOOKUP",
 )
 
+# Maximum number of characters to scan forward when parsing inline regex flags (e.g., '(?i)').
+# This prevents runaway scanning in malformed patterns where the closing ')' or ':' is missing.
+MAX_FLAGS_LEN = 10
+
+# Maximum number of iterations for optimization passes that collapse jump chains (e.g., JUMP -> JUMP).
+# This allows flattening deep jump sequences while providing a safety break against potential
+# infinite cycles that could arise from malformed bytecode during the compilation phase.
+MAX_OPTIMIZATION_PASSES = 100
+
 def _inst(op, val = None, **kwargs):
     return struct(op = op, val = val, **kwargs)
 
@@ -81,7 +90,18 @@ def _new_set_builder(case_insensitive = False):
         "ascii_list": [False] * 256,
     }
 
+    # RANGE_EXPANSION_LIMIT defines the maximum distance between start and end codes in a
+    # character range (e.g., [a-z]) that will be expanded into individual characters in
+    # the 'lookup' dictionary. Expanding ranges allows for O(1) membership checks during
+    # regex execution but increases memory usage. Ranges larger than this limit are
+    # stored as (start, end) tuples and checked via range comparison.
     RANGE_EXPANSION_LIMIT = 512
+
+    # ALL_CHARS_STR_LIMIT defines the maximum number of unique characters that can be
+    # stored in the 'all_chars' string for a character set. If a set contains fewer
+    # characters than this limit (and has no large unexpanded ranges or negated POSIX
+    # classes), it is marked as 'is_simple'. Simple sets can be matched more efficiently
+    # by the VM using string-in-string checks (e.g., char in all_chars_str).
     ALL_CHARS_STR_LIMIT = 2048
 
     def add_char(c):
@@ -400,7 +420,8 @@ def _parse_group_start(pattern, i, pattern_len, flags):
             found_end = False
             is_scoped = False
 
-            for _ in range(10):
+            # Limit scanning for flags to a reasonable length to avoid runaway parsing.
+            for _ in range(MAX_FLAGS_LEN):
                 if k >= pattern_len:
                     break
                 c_flag = pattern[k]
@@ -755,7 +776,10 @@ def _optimize_jumps(instructions):
     """Collapses chains of JUMP -> JUMP and SPLIT -> JUMP."""
     num_insts = len(instructions)
 
-    for _ in range(10):
+    # Collapsing jump chains (JUMP A -> JUMP B) can require multiple passes.
+    # We use a large enough limit to catch deep chains while preventing infinite
+    # loops in case of malformed bytecode cycles.
+    for _ in range(MAX_OPTIMIZATION_PASSES):
         optimized = False
         old_to_new = {}
         for i in range(num_insts):
