@@ -3,7 +3,7 @@ Utility functions for the Starlark regex engine tests using bazel_skylib.
 """
 
 load("@bazel_skylib//lib:unittest.bzl", "asserts", "unittest")
-load("//lib:re.bzl", "search")
+load("//re:re.bzl", "search")
 
 def _regex_test_impl(ctx):
     env = unittest.begin(ctx)

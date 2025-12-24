@@ -3,7 +3,7 @@ Tests for regex groups and backreferences.
 """
 
 load("@bazel_skylib//lib:unittest.bzl", "unittest")
-load("//lib/tests:utils.bzl", "run_suite")
+load("//re/tests:utils.bzl", "run_suite")
 
 def _test_groups_impl(ctx):
     env = unittest.begin(ctx)

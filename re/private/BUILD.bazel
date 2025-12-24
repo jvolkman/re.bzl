@@ -1,19 +1,19 @@
 load("@bazel_lib//:bzl_library.bzl", "bzl_library")
 
-package(default_visibility = ["//lib:__subpackages__"])
+package(default_visibility = ["//re:__subpackages__"])
 
 exports_files(["re.bzl"])
 
 bzl_library(
     name = "constants",
     srcs = ["constants.bzl"],
-    visibility = ["//lib:__subpackages__"],
+    visibility = ["//re:__subpackages__"],
 )
 
 bzl_library(
     name = "compiler",
     srcs = ["compiler.bzl"],
-    visibility = ["//lib:__subpackages__"],
+    visibility = ["//re:__subpackages__"],
     deps = [
         ":constants",
     ],
@@ -22,7 +22,7 @@ bzl_library(
 bzl_library(
     name = "vm",
     srcs = ["vm.bzl"],
-    visibility = ["//lib:__subpackages__"],
+    visibility = ["//re:__subpackages__"],
     deps = [
         ":constants",
     ],
@@ -31,7 +31,7 @@ bzl_library(
 bzl_library(
     name = "re",
     srcs = ["re.bzl"],
-    visibility = ["//lib:__subpackages__"],
+    visibility = ["//re:__subpackages__"],
     deps = [
         ":compiler",
         ":vm",

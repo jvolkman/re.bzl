@@ -9,7 +9,7 @@ bzl_library(
     srcs = ["re.bzl"],
     visibility = ["//visibility:public"],
     deps = [
-        "//lib/private:re",
+        "//re/private:re",
     ],
 )
 

@@ -1,6 +1,6 @@
 """Benchmarks for the Starlark regex engine."""
 
-load("//lib:re.bzl", "compile", "match", "search")
+load("//re:re.bzl", "compile", "match", "search")
 
 def benchmark_simple_match(n):
     p = compile("abc")

@@ -3,7 +3,7 @@ Tests for core regex functionality.
 """
 
 load("@bazel_skylib//lib:unittest.bzl", "unittest")
-load("//lib/tests:utils.bzl", "run_suite")
+load("//re/tests:utils.bzl", "run_suite")
 
 def _test_core_impl(ctx):
     env = unittest.begin(ctx)

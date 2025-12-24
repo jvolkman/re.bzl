@@ -1,7 +1,7 @@
 """Benchmark test for the Starlark regex engine."""
 
 load("@bazel_skylib//lib:unittest.bzl", "unittest")
-load("//lib/tests/benchmarks:benchmarks.bzl", "run_benchmarks")
+load("//re/tests/benchmarks:benchmarks.bzl", "run_benchmarks")
 
 def _benchmark_test_impl(ctx):
     env = unittest.begin(ctx)

@@ -12,7 +12,7 @@ To accurately measure performance changes:
     ```
 2.  **Profile the build**: Use the `--starlark_cpu_profile` flag to capture Starlark analysis time, and `--nobuild` to skip execution.
     ```bash
-    bazel build //lib/tests:repro_benchmark --starlark_cpu_profile=profile.gz --nobuild
+    bazel build //re/tests:repro_benchmark --starlark_cpu_profile=profile.gz --nobuild
     ```
 3.  **Analyze**: Use a tool like `pprof` or Chrome Tracing (`chrome://tracing`) to inspect the `profile.gz` file and look for Starlark execution phases.
 

@@ -3,7 +3,7 @@ Tests for Unicode character support.
 """
 
 load("@bazel_skylib//lib:unittest.bzl", "unittest")
-load("//lib/tests:utils.bzl", "run_suite")
+load("//re/tests:utils.bzl", "run_suite")
 
 def _test_unicode_impl(ctx):
     env = unittest.begin(ctx)

@@ -11,5 +11,5 @@ exports_files(["re.bzl"])
 bzl_library(
     name = "re",
     srcs = ["re.bzl"],
-    deps = ["//lib:re"],
+    deps = ["//re:re"],
 )

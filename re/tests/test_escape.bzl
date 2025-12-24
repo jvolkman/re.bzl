@@ -3,7 +3,7 @@ Tests for escaping special characters.
 """
 
 load("@bazel_skylib//lib:unittest.bzl", "unittest")
-load("//lib/tests:utils.bzl", "assert_match")
+load("//re/tests:utils.bzl", "assert_match")
 
 def _test_escape_impl(ctx):
     env = unittest.begin(ctx)

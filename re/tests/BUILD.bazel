@@ -1,13 +1,13 @@
 load("@bazel_lib//:bzl_library.bzl", "bzl_library")
-load("//lib/tests:test_anchors_flags.bzl", "anchors_flags_test")
-load("//lib/tests:test_api.bzl", "api_test")
-load("//lib/tests:test_core.bzl", "core_test")
-load("//lib/tests:test_escape.bzl", "escape_test")
-load("//lib/tests:test_groups.bzl", "groups_test")
-load("//lib/tests:test_optimization.bzl", "optimization_test")
-load("//lib/tests:test_quantifiers.bzl", "quantifiers_test")
-load("//lib/tests:test_root_import.bzl", "root_import_test")
-load("//lib/tests:test_unicode.bzl", "unicode_test")
+load("//re/tests:test_anchors_flags.bzl", "anchors_flags_test")
+load("//re/tests:test_api.bzl", "api_test")
+load("//re/tests:test_core.bzl", "core_test")
+load("//re/tests:test_escape.bzl", "escape_test")
+load("//re/tests:test_groups.bzl", "groups_test")
+load("//re/tests:test_optimization.bzl", "optimization_test")
+load("//re/tests:test_quantifiers.bzl", "quantifiers_test")
+load("//re/tests:test_root_import.bzl", "root_import_test")
+load("//re/tests:test_unicode.bzl", "unicode_test")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -16,7 +16,7 @@ bzl_library(
     srcs = ["utils.bzl"],
     visibility = ["//visibility:public"],
     deps = [
-        "//lib:re",
+        "//re:re",
         "@bazel_skylib//lib:unittest",
     ],
 )

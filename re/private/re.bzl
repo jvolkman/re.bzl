@@ -1,12 +1,12 @@
 """Core implementation of Starlark Regex Engine."""
 
 load(
-    "//lib/private:compiler.bzl",
+    "//re/private:compiler.bzl",
     "compile_regex",
     "optimize_matcher",
 )
 load(
-    "//lib/private:vm.bzl",
+    "//re/private:vm.bzl",
     "MatchObject",
     "expand_template",
     "fullmatch_bytecode",

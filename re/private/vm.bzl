@@ -1,7 +1,7 @@
 "VM for Starlark Regex Engine."
 
 load(
-    "//lib/private:constants.bzl",
+    "//re/private:constants.bzl",
     "MAX_GROUP_NAME_LEN",
     "OP_ANCHOR_END",
     "OP_ANCHOR_LINE_END",
