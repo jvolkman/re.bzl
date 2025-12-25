@@ -2,7 +2,10 @@
 
 load(
     "//re/private:constants.bzl",
+    "DOTALL",
+    "IGNORECASE",
     "MAX_GROUP_NAME_LEN",
+    "MULTILINE",
     "OP_ANCHOR_END",
     "OP_ANCHOR_LINE_END",
     "OP_ANCHOR_LINE_START",
@@ -19,6 +22,9 @@ load(
     "OP_SPLIT",
     "OP_STRING",
     "OP_WORD_BOUNDARY",
+    "UNGREEDY",
+    "UNICODE",
+    "VERBOSE",
     _CHR_LOOKUP = "CHR_LOOKUP",
     _ORD_LOOKUP = "ORD_LOOKUP",
 )
@@ -365,7 +371,7 @@ def _parse_group_start(pattern, i, pattern_len, flags):
 
     Returns struct(new_i, is_capturing, group_name, is_group_start, new_flags).
     """
-    case_insensitive, multiline, dot_all, ungreedy = flags
+    case_insensitive, multiline, dot_all, ungreedy, verbose = flags
     is_capturing = True
     group_name = None
     is_group_start = True
@@ -415,6 +421,7 @@ def _parse_group_start(pattern, i, pattern_len, flags):
             temp_multi = multiline
             temp_dot = dot_all
             temp_ungreedy = ungreedy
+            temp_verbose = verbose
 
             k = i + 2
             found_end = False
@@ -442,6 +449,8 @@ def _parse_group_start(pattern, i, pattern_len, flags):
                     temp_dot = not temp_negate
                 elif c_flag == "U":
                     temp_ungreedy = not temp_negate
+                elif c_flag == "x":
+                    temp_verbose = not temp_negate
                 else:
                     # Not a flag group, treat as normal group starting with ?
                     break
@@ -452,6 +461,7 @@ def _parse_group_start(pattern, i, pattern_len, flags):
                 multiline = temp_multi
                 dot_all = temp_dot
                 ungreedy = temp_ungreedy
+                verbose = temp_verbose
                 i = k  # Move to ) or :
 
                 if is_scoped:
@@ -465,7 +475,7 @@ def _parse_group_start(pattern, i, pattern_len, flags):
         is_capturing = is_capturing,
         group_name = group_name,
         is_group_start = is_group_start,
-        new_flags = (case_insensitive, multiline, dot_all, ungreedy),
+        new_flags = (case_insensitive, multiline, dot_all, ungreedy, verbose),
     )
 
 def _is_disjoint(body_inst, next_inst):
@@ -995,11 +1005,12 @@ def _handle_quantifier(pattern, i, insts, atom_start = -1, ungreedy = False):
         return i
 
 # buildifier: disable=list-append
-def compile_regex(pattern, start_group_id = 0):
+def compile_regex(pattern, flags = 0, start_group_id = 0):
     """Compiles regex to bytecode using Thompson NFA construction.
 
-    Args:
+     Args:
       pattern: The regex pattern string.
+      flags: Regex flags (e.g. re.I, re.M, re.VERBOSE).
       start_group_id: The starting ID for capturing groups.
 
     Returns:
@@ -1012,10 +1023,12 @@ def compile_regex(pattern, start_group_id = 0):
     stack = []
 
     # Flags state
-    case_insensitive = False
-    multiline = False
-    dot_all = False
-    ungreedy = False
+    case_insensitive = bool(flags & IGNORECASE)
+    multiline = bool(flags & MULTILINE)
+    dot_all = bool(flags & DOTALL)
+    ungreedy = bool(flags & UNGREEDY)
+    verbose = bool(flags & VERBOSE)
+    _unicode = bool(flags & UNICODE)  # @unused
     has_case_insensitive = False
 
     # Always save group 0 (full match) start
@@ -1026,7 +1039,7 @@ def compile_regex(pattern, start_group_id = 0):
         "type": "root",
         "branch_starts": [len(instructions)],
         "exit_jumps": [],
-        "flags": (case_insensitive, multiline, dot_all, ungreedy),
+        "flags": (case_insensitive, multiline, dot_all, ungreedy, verbose),
     }]
 
     pattern_len = len(pattern)
@@ -1035,6 +1048,21 @@ def compile_regex(pattern, start_group_id = 0):
             break
 
         char = pattern[i]
+
+        if verbose:
+            if char == " " or char == "\t" or char == "\n" or char == "\r" or char == "\f" or char == "\v":
+                i += 1
+                continue
+            if char == "#":
+                # Skip until end of line
+                for k in range(i + 1, pattern_len):
+                    if pattern[k] == "\n":
+                        i = k
+                        break
+                    if k == pattern_len - 1:
+                        i = pattern_len
+                i += 1
+                continue
 
         if char == "^":
             if multiline:
@@ -1060,13 +1088,13 @@ def compile_regex(pattern, start_group_id = 0):
             i = _handle_quantifier(pattern, i, instructions)
 
         elif char == "(":
-            saved_flags = (case_insensitive, multiline, dot_all, ungreedy)
+            saved_flags = (case_insensitive, multiline, dot_all, ungreedy, verbose)
             res = _parse_group_start(pattern, i, pattern_len, saved_flags)
             i = res.new_i
             is_capturing = res.is_capturing
             group_name = res.group_name
             is_group_start = res.is_group_start
-            case_insensitive, multiline, dot_all, ungreedy = res.new_flags
+            case_insensitive, multiline, dot_all, ungreedy, verbose = res.new_flags
 
             if is_group_start:
                 gid = -1
@@ -1108,7 +1136,7 @@ def compile_regex(pattern, start_group_id = 0):
                     start_pc_fix = top["start_pc"]
 
                     # Restore flags
-                    case_insensitive, multiline, dot_all, ungreedy = top["flags"]
+                    case_insensitive, multiline, dot_all, ungreedy, verbose = top["flags"]
 
                     i = _handle_quantifier(pattern, i, instructions, atom_start = start_pc_fix, ungreedy = ungreedy)
 

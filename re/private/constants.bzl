@@ -20,6 +20,19 @@ OP_ANCHOR_LINE_END = 13  # Match end or before \n
 OP_STRING = 14  # Match string literally
 OP_GREEDY_LOOP = 15  # Optimization: Fast-path for x*
 
+# Flags
+I = 2
+IGNORECASE = I
+M = 8
+MULTILINE = M
+S = 16
+DOTALL = S
+U = 32
+UNICODE = U
+X = 64
+VERBOSE = X
+UNGREEDY = 128
+
 CHR_LOOKUP = (
     "\000\001\002\003\004\005\006\007" +
     "\010\011\012\013\014\015\016\017" +

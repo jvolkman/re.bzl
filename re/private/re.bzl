@@ -19,7 +19,7 @@ load(
 # Types
 _FUNCTION_TYPE = type(len)
 
-def compile(pattern):
+def compile(pattern, flags = 0):
     """Compiles a regex pattern into a reusable object.
 
     The returned object has 'search', 'match', and 'fullmatch' methods that work
@@ -27,6 +27,7 @@ def compile(pattern):
 
     Args:
       pattern: The regex pattern string.
+      flags: Regex flags (e.g. re.I, re.M, re.VERBOSE).
 
     Returns:
       A struct containing the compiled bytecode and methods:
@@ -52,7 +53,7 @@ def compile(pattern):
     if hasattr(pattern, "bytecode"):
         return pattern
 
-    bytecode, named_groups, group_count, has_case_insensitive = compile_regex(pattern)
+    bytecode, named_groups, group_count, has_case_insensitive = compile_regex(pattern, flags = flags)
     opt = optimize_matcher(bytecode)
 
     def _search(text):
@@ -76,50 +77,53 @@ def compile(pattern):
         opt = opt,
     )
 
-def search(pattern, text):
+def search(pattern, text, flags = 0):
     """Scan through string looking for the first location where the regex pattern produces a match.
 
     Args:
       pattern: The regex pattern string or a compiled regex object.
       text: The text to match against.
+      flags: Regex flags (only if pattern is a string).
 
     Returns:
       A MatchObject containing the match results, or None if no match was found.
       See `compile` for details on MatchObject.
     """
-    compiled = compile(pattern)
+    compiled = compile(pattern, flags = flags)
     return search_bytecode(compiled.bytecode, text, compiled.named_groups, compiled.group_count, start_index = 0, has_case_insensitive = compiled.has_case_insensitive, opt = compiled.opt)
 
-def match(pattern, text):
+def match(pattern, text, flags = 0):
     """Try to apply the pattern at the start of the string.
 
     Args:
       pattern: The regex pattern string or a compiled regex object.
       text: The text to match against.
+      flags: Regex flags (only if pattern is a string).
 
     Returns:
       A MatchObject containing the match results, or None if no match was found.
       See `compile` for details on MatchObject.
     """
-    compiled = compile(pattern)
+    compiled = compile(pattern, flags = flags)
     return match_bytecode(compiled.bytecode, text, compiled.named_groups, compiled.group_count, start_index = 0, has_case_insensitive = compiled.has_case_insensitive, opt = compiled.opt)
 
-def fullmatch(pattern, text):
+def fullmatch(pattern, text, flags = 0):
     """Try to apply the pattern to the entire string.
 
     Args:
       pattern: The regex pattern string or a compiled regex object.
       text: The text to match against.
+      flags: Regex flags (only if pattern is a string).
 
     Returns:
       A MatchObject containing the match results, or None if no match was found.
       See `compile` for details on MatchObject.
     """
-    compiled = compile(pattern)
+    compiled = compile(pattern, flags = flags)
     return fullmatch_bytecode(compiled.bytecode, text, compiled.named_groups, compiled.group_count, start_index = 0, has_case_insensitive = compiled.has_case_insensitive, opt = compiled.opt)
 
 # buildifier: disable=list-append
-def findall(pattern, text):
+def findall(pattern, text, flags = 0):
     """Return all non-overlapping matches of pattern in string, as a list of strings.
 
     If one or more groups are present in the pattern, return a list of groups.
@@ -128,11 +132,12 @@ def findall(pattern, text):
     Args:
       pattern: The regex pattern string or a compiled regex object.
       text: The text to match against.
+      flags: Regex flags (only if pattern is a string).
 
     Returns:
       A list of matching strings or tuples of matching groups.
     """
-    compiled = compile(pattern)
+    compiled = compile(pattern, flags = flags)
     group_count = compiled.group_count
     matches = []
     start_index = 0
@@ -185,7 +190,7 @@ def findall(pattern, text):
     return matches
 
 # buildifier: disable=list-append
-def sub(pattern, repl, text, count = 0):
+def sub(pattern, repl, text, count = 0, flags = 0):
     """Return the string obtained by replacing the leftmost non-overlapping occurrences of the pattern in text by the replacement repl.
 
     Args:
@@ -194,13 +199,14 @@ def sub(pattern, repl, text, count = 0):
       text: The text to search.
       count: The maximum number of pattern occurrences to replace.
         If non-positive, all occurrences are replaced.
+      flags: Regex flags (only if pattern is a string).
 
     Returns:
       The text with the replacements applied.
     """
 
     # We need named groups for \g<name>, so we need the compiled object.
-    compiled = compile(pattern)
+    compiled = compile(pattern, flags = flags)
 
     res_parts = []
     last_idx = 0
@@ -240,7 +246,6 @@ def sub(pattern, repl, text, count = 0):
         match_str = text[match_start:match_end]
 
         # Construct groups tuple only if needed
-
         groups = []
         for i in range(1, group_count + 1):
             s = regs[i * 2]
@@ -277,7 +282,7 @@ def sub(pattern, repl, text, count = 0):
     return "".join(res_parts)
 
 # buildifier: disable=list-append
-def split(pattern, text, maxsplit = 0):
+def split(pattern, text, maxsplit = 0, flags = 0):
     """Split the source string by the occurrences of the pattern, returning a list containing the resulting substrings.
 
     Args:
@@ -285,12 +290,13 @@ def split(pattern, text, maxsplit = 0):
       text: The text to split.
       maxsplit: The maximum number of splits to perform.
         If non-positive, there is no limit on the number of splits.
+      flags: Regex flags (only if pattern is a string).
 
     Returns:
       A list of strings.
     """
 
-    compiled = compile(pattern)
+    compiled = compile(pattern, flags = flags)
     res_parts = []
     last_idx = 0
     start_index = 0
