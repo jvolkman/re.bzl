@@ -8,7 +8,7 @@ bzl_library(
     srcs = ["benchmarks.bzl"],
     visibility = ["//visibility:public"],
     deps = [
-        "//re:re",
+        "//re",
     ],
 )
 

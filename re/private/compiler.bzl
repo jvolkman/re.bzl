@@ -112,6 +112,8 @@ def _new_set_builder(case_insensitive = False):
     ALL_CHARS_STR_LIMIT = 2048
 
     def add_char(c):
+        if len(c) > 1:
+            fail("Multi-byte character '%s' not supported in character class" % c)
         if case_insensitive:
             c = c.lower()
         state["lookup"][c] = True
@@ -129,6 +131,7 @@ def _new_set_builder(case_insensitive = False):
         if start_code < 256:
             limit = end_code
             if limit > 255:
+                # Range goes beyond ASCII, only support up to 255 for now in ranges
                 limit = 255
             for k in range(start_code, limit + 1):
                 c_iter = _CHR_LOOKUP[k]
@@ -208,6 +211,34 @@ def _new_set_builder(case_insensitive = False):
         build = build,
     )
 
+def _to_hex_4(val):
+    """Formats an integer (0-65535) as a 4-digit hex string."""
+    chars = "0123456789abcdef"
+    res = ""
+    for _ in range(4):
+        res = chars[val & 0xF] + res
+        val = val // 16
+    return res
+
+def _chr(codepoint):
+    """Returns a string for the given codepoint."""
+    if codepoint < 0:
+        fail("Invalid codepoint: " + str(codepoint))
+
+    if codepoint < 256:
+        return _CHR_LOOKUP[codepoint]
+
+    if codepoint <= 0xFFFF:
+        return json.decode('"' + "\\u" + _to_hex_4(codepoint) + '"')
+
+    if codepoint <= 0x10FFFF:
+        codepoint -= 0x10000
+        high = 0xD800 + (codepoint // 1024)  # Starlark bitwise >> might be limited? // works
+        low = 0xDC00 + (codepoint % 1024)
+        return json.decode('"' + "\\u" + _to_hex_4(high) + "\\u" + _to_hex_4(low) + '"')
+
+    fail("Codepoint too large: " + str(codepoint))
+
 def _parse_escape(pattern, i, pattern_len):
     """Parses an escape sequence at i. Returns (char, last_consumed_i)."""
     if i >= pattern_len:
@@ -231,9 +262,7 @@ def _parse_escape(pattern, i, pattern_len):
                 if val <= 255:
                     return _CHR_LOOKUP[val], end_brace
                 else:
-                    # For now, we only support up to 255 in our _chr lookup
-                    # but we could return the raw int if we changed _chr
-                    fail("Hex escape too large: " + hex_str)
+                    return _chr(val), end_brace
 
         if i + 2 < pattern_len:
             hex_str = pattern[i + 1:i + 3]
@@ -247,6 +276,38 @@ def _parse_escape(pattern, i, pattern_len):
             if valid_hex:
                 return _CHR_LOOKUP[int(hex_str, 16)], i + 2
         return "x", i
+
+    if char == "u":
+        # \uXXXX
+        if i + 4 < pattern_len:
+            hex_str = pattern[i + 1:i + 5]
+            valid_hex = True
+            for k in range(len(hex_str)):
+                hc = hex_str[k]
+                if not ((hc >= "0" and hc <= "9") or (hc >= "a" and hc <= "f") or (hc >= "A" and hc <= "F")):
+                    valid_hex = False
+                    break
+
+            if valid_hex:
+                val = int(hex_str, 16)
+                return _chr(val), i + 4
+        return "u", i
+
+    if char == "U":
+        # \UXXXXXXXX
+        if i + 8 < pattern_len:
+            hex_str = pattern[i + 1:i + 9]
+            valid_hex = True
+            for k in range(len(hex_str)):
+                hc = hex_str[k]
+                if not ((hc >= "0" and hc <= "9") or (hc >= "a" and hc <= "f") or (hc >= "A" and hc <= "F")):
+                    valid_hex = False
+                    break
+
+            if valid_hex:
+                val = int(hex_str, 16)
+                return _chr(val), i + 8
+        return "U", i
 
     if char >= "0" and char <= "7":
         oct_str = char
@@ -1241,7 +1302,12 @@ def compile_regex(pattern, flags = 0, start_group_id = 0):
                         has_case_insensitive = True
                         if char:
                             char = char.lower()
-                        instructions += [_inst(OP_CHAR, val = char, is_ci = True)]
+                        if len(char) > 1:
+                            instructions += [_inst(OP_STRING, val = char, is_ci = True)]
+                        else:
+                            instructions += [_inst(OP_CHAR, val = char, is_ci = True)]
+                    elif len(char) > 1:
+                        instructions += [_inst(OP_STRING, val = char, is_ci = False)]
                     else:
                         instructions += [_inst(OP_CHAR, val = char, is_ci = False)]
                 i = _handle_quantifier(pattern, i, instructions, ungreedy = ungreedy)
@@ -1249,7 +1315,12 @@ def compile_regex(pattern, flags = 0, start_group_id = 0):
         else:
             if case_insensitive:
                 has_case_insensitive = True
-                instructions += [_inst(OP_CHAR, val = char.lower(), is_ci = True)]
+                if len(char) > 1:
+                    instructions += [_inst(OP_STRING, val = char.lower(), is_ci = True)]
+                else:
+                    instructions += [_inst(OP_CHAR, val = char.lower(), is_ci = True)]
+            elif len(char) > 1:
+                instructions += [_inst(OP_STRING, val = char, is_ci = False)]
             else:
                 instructions += [_inst(OP_CHAR, val = char, is_ci = False)]
             i = _handle_quantifier(pattern, i, instructions, ungreedy = ungreedy)

@@ -88,3 +88,13 @@ def run_tests_escape(env):
 
     # Stress Tests: Many Escapes
     assert_match(env, "\\n\\r\\t\\a\\f\\v", "\n\r\t\a\f\v", "\n\r\t\a\f\v")
+
+    # Unicode Escapes (Starlark JSON trick)
+    # 1. BMP \uXXXX
+    assert_match(env, "\\u263A", "☺", "☺")
+
+    # 2. Supplementary \UXXXXXXXX
+    assert_match(env, "\\U0001F600", "😀", "😀")
+
+    # 3. Mixed Escape types
+    assert_match(env, "Hello \\u263A", "Hello ☺", "Hello ☺")
