@@ -1008,7 +1008,7 @@ def _handle_quantifier(pattern, i, insts, atom_start = -1, ungreedy = False):
 def compile_regex(pattern, flags = 0, start_group_id = 0):
     """Compiles regex to bytecode using Thompson NFA construction.
 
-     Args:
+    Args:
       pattern: The regex pattern string.
       flags: Regex flags (e.g. re.I, re.M, re.VERBOSE).
       start_group_id: The starting ID for capturing groups.

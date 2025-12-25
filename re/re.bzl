@@ -6,7 +6,7 @@ load("//re/private:constants.bzl", _DOTALL = "DOTALL", _I = "I", _IGNORECASE = "
 load("//re/private:re.bzl", _compile = "compile", _findall = "findall", _fullmatch = "fullmatch", _match = "match", _search = "search", _split = "split", _sub = "sub")
 
 # Re-export flags
-I = _I
+I = _I  # buildifier: disable=confusing-name
 M = _M
 S = _S
 U = _U
