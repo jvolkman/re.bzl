@@ -7,6 +7,7 @@ load("//re/tests:test_groups.bzl", "groups_test")
 load("//re/tests:test_optimization.bzl", "optimization_test")
 load("//re/tests:test_quantifiers.bzl", "quantifiers_test")
 load("//re/tests:test_root_import.bzl", "root_import_test")
+load("//re/tests:test_ungreedy_opt.bzl", "ungreedy_opt_test")
 load("//re/tests:test_unicode.bzl", "unicode_test")
 load("//re/tests:test_verbose.bzl", "verbose_test")
 
@@ -42,6 +43,8 @@ root_import_test(name = "root_import_test")
 
 verbose_test(name = "verbose_test")
 
+ungreedy_opt_test(name = "ungreedy_opt_test")
+
 test_suite(
     name = "all_tests",
     tests = [
@@ -53,6 +56,7 @@ test_suite(
         ":optimization_test",
         ":quantifiers_test",
         ":root_import_test",
+        ":ungreedy_opt_test",
         ":unicode_test",
         ":verbose_test",
     ],

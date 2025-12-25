@@ -19,9 +19,10 @@ OP_ANCHOR_LINE_START = 12  # Match start or after \n
 OP_ANCHOR_LINE_END = 13  # Match end or before \n
 OP_STRING = 14  # Match string literally
 OP_GREEDY_LOOP = 15  # Optimization: Fast-path for x*
+OP_UNGREEDY_LOOP = 16  # Optimization: Fast-path for x*?
 
 # Flags
-I = 2
+I = 2  # buildifier: disable=confusing-name
 IGNORECASE = I
 M = 8
 MULTILINE = M

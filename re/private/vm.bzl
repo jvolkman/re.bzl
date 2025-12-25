@@ -18,6 +18,7 @@ load(
     "OP_SET",
     "OP_SPLIT",
     "OP_STRING",
+    "OP_UNGREEDY_LOOP",
     "OP_WORD_BOUNDARY",
     "ORD_LOOKUP",
 )
@@ -175,11 +176,41 @@ def _get_epsilon_closure(instructions, input_str, input_len, start_pc, start_reg
                     # Continue loop to process new pc
 
                 else:
-                    # Consuming state.
-                    # It stops epsilon expansion.
-                    # We add it to reachable and BREAK the inner loop.
                     reachable += [(pc, regs)]
                     break
+            elif itype == OP_UNGREEDY_LOOP:
+                # Optimized x*? loop logic with Cache
+                if visited[pc] == visited_gen:
+                    # First visit: Epsilon path (high priority)
+                    # Stay in epsilon expansion loop for exit_pc
+                    stack += [(pc, regs)]  # Push to stack for second visit (low priority)
+                    pc = inst.exit_pc
+                else:
+                    # Second visit (visited[pc] == visited_gen + 1):
+                    # Consuming path (low priority)
+                    # Use cache to check if we can consume
+                    chars = inst.val
+                    is_ci = inst.is_ci
+                    last_end = greedy_cache.get(pc, -1)
+                    match_len = 0
+
+                    if last_end >= current_idx:
+                        match_len = last_end - current_idx
+                    else:
+                        # Compute and cache
+                        if is_ci and input_lower != None:
+                            current_slice = input_lower[current_idx:]
+                        else:
+                            current_slice = input_str[current_idx:]
+
+                        stripped = current_slice.lstrip(chars)
+                        match_len = len(current_slice) - len(stripped)
+                        greedy_cache[pc] = current_idx + match_len
+
+                    if match_len > 0:
+                        reachable += [(pc, regs)]
+                    break
+
             else:
                 # Consuming instruction (CHAR, SET etc)
                 # Add to reachable and stop
@@ -257,8 +288,13 @@ def _process_batch(instructions, batch, input_str, current_idx, input_len, input
                 match_found = (set_struct.ascii_bitmap[ORD_LOOKUP[c_check]] != is_negated)
             else:
                 match_found = (_char_in_set(set_struct, c_check) != is_negated)
-
         elif itype == OP_GREEDY_LOOP:
+            is_ci = inst.is_ci
+            if is_ci:
+                match_found = (char_lower in inst.val)
+            else:
+                match_found = (char in inst.val)
+        elif itype == OP_UNGREEDY_LOOP:
             is_ci = inst.is_ci
             if is_ci:
                 match_found = (char_lower in inst.val)
@@ -267,7 +303,7 @@ def _process_batch(instructions, batch, input_str, current_idx, input_len, input
 
         if match_found:
             next_pc = pc
-            if itype != OP_GREEDY_LOOP:
+            if itype != OP_GREEDY_LOOP and itype != OP_UNGREEDY_LOOP:
                 next_pc = pc + 1
 
             if next_pc not in next_threads_dict:
@@ -596,9 +632,22 @@ def search_regs(bytecode, text, group_count, start_index = 0, has_case_insensiti
                         search_start -= 1
 
                 # Now try a real search starting at search_start
-                if opt.prefix == "" and opt.prefix_set_chars == None and opt.is_suffix_disjoint:
+                can_bypass = False
+                if opt.prefix == "" and opt.prefix_set_chars == None:
+                    if opt.is_suffix_disjoint:
+                        can_bypass = True
+                    elif opt.is_ungreedy_loop:
+                        prefix_loop_data = text[search_start:found_idx]
+                        if opt.is_greedy_case_insensitive:
+                            if input_lower != None:
+                                prefix_loop_data = input_lower[search_start:found_idx]
+                            else:
+                                prefix_loop_data = prefix_loop_data.lower()
+                        if prefix_loop_data.lstrip(opt.greedy_set_chars) == "":
+                            can_bypass = True
+
+                if can_bypass:
                     # Optimization: We know we matched everything up to suffix
-                    # because we stripped greedy_set_chars.
                     regs = [-1] * ((group_count + 1) * 2 + 1)
                     regs[0] = search_start
                     regs[1] = found_idx + len(opt.suffix)
@@ -792,8 +841,6 @@ def MatchObject(text, regs, compiled, pos, endpos):
 
     Returns:
       A MatchObject struct.
-
-    TODO: Convert this to a struct when migrating to Bazel rules (which support structs).
     """
 
     def group(n = 0):
