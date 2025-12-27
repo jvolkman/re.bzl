@@ -57,7 +57,7 @@ def _benchmark_fast_path_group(n):
         search(p3, t3)
 
 # Very large input benchmark (1MB)
-def benchmark_very_large_input(n):
+def _benchmark_very_large_input(n):
     text = "a" * 1000000 + "b"
     p = compile(r"a*b")
     for _ in range(n):
@@ -85,6 +85,6 @@ def run_benchmarks(n = 0):
     print("Running case_insensitive_greedy...")
     benchmark_case_insensitive_greedy(n)
     print("Running very_large_input...")
-    benchmark_very_large_input(n)
+    _benchmark_very_large_input(n)
     print("Running fast_path optimizations...")
     _benchmark_fast_path_group(n)
