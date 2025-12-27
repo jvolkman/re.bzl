@@ -167,3 +167,14 @@ def run_tests_api(env):
     # endpos should act as the end of the string for anchors
     assert_eq(env, bool(search("abc$", "xabcy", endpos = 4)), True, "endpos works with $ anchor")
     assert_eq(env, bool(match(r"abc\b", "abc.def", endpos = 3)), True, "endpos works with \b boundary")
+
+    # 15. groupdict()
+    m_dict = search(r"(?P<first>a)(?P<second>b)", "ab")
+    assert_eq(env, m_dict.groupdict(), {"first": "a", "second": "b"}, "groupdict returns correct dict")
+
+    m_dict_partial = search(r"(?P<first>a)?(?P<second>b)", "b")
+    assert_eq(env, m_dict_partial.groupdict(), {"first": None, "second": "b"}, "groupdict handles unmatched groups")
+    assert_eq(env, m_dict_partial.groupdict("default"), {"first": "default", "second": "b"}, "groupdict uses default for unmatched")
+
+    m_no_named = search(r"(a)(b)", "ab")
+    assert_eq(env, m_no_named.groupdict(), {}, "groupdict returns empty dict if no named groups")

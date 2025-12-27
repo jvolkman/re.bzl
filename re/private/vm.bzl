@@ -925,6 +925,17 @@ def MatchObject(text, regs, compiled, pos, endpos):
                 res += [text[start:end]]
         return tuple(res)
 
+    def groupdict(default = None):
+        res = {}
+        for name, i in compiled.named_groups.items():
+            start = regs[i * 2]
+            end = regs[i * 2 + 1]
+            if start == -1 or end == -1:
+                res[name] = default
+            else:
+                res[name] = text[start:end]
+        return res
+
     def span(n = 0):
         if type(n) == _STRING_TYPE:
             if n in compiled.named_groups:
@@ -956,6 +967,7 @@ def MatchObject(text, regs, compiled, pos, endpos):
     return struct(
         group = group,
         groups = groups,
+        groupdict = groupdict,
         span = span,
         start = start,
         end = end,

@@ -40,6 +40,7 @@ def compile(pattern, flags = 0):
       The MatchObject returned by these methods has the following members:
       - group(n=0): Returns the string matched by group n (int or string name).
       - groups(default=None): Returns a tuple of all captured groups.
+      - groupdict(default=None): Returns a dictionary containing all the named subgroups.
       - span(n=0): Returns the (start, end) tuple of the match for group n.
       - start(n=0): Returns the start index of the match for group n.
       - end(n=0): Returns the end index of the match for group n.
