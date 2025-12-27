@@ -9,7 +9,7 @@ java_binary(
 
 stardoc_with_diff_test(
     name = "re",
-    bzl_library_target = "@re.bzl//re:re",
+    bzl_library_target = "@re.bzl//:re",
     renderer = ":renderer",
 )
 
