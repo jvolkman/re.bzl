@@ -4,7 +4,7 @@ Bazel module definition for the Starlark regex engine.
 
 module(
     name = "re.bzl",
-    version = "0.1.0",
+    compatibility_level = 1,
 )
 
 bazel_dep(name = "bazel_lib", version = "3.0.0")
