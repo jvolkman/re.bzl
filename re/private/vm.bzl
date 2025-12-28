@@ -266,9 +266,6 @@ def _process_batch(instructions, batch, input_str, current_idx, input_len, input
     char_lower = input_lower[current_idx] if input_lower != None and current_idx < input_len else None
 
     # Process in priority order (0 = highest)
-    # Since we use pop(), we reverse to process index 0 last? No, reverse AND pop for FIFO?
-    # Actually, let's just use a normal list and iterate.
-    # The important part is that we BREAK once we find a match, which prunes lower priorities.
     for i in range(len(batch)):
         pc, regs, skip_idx = batch[i]
         if skip_idx > current_idx:
@@ -290,8 +287,6 @@ def _process_batch(instructions, batch, input_str, current_idx, input_len, input
             # PRUNING: Once a match is found, no lower-priority thread can EVER win
             # for the current or any FUTURE character position (leftmost-priority).
             # We stop processing the current batch AND return the match.
-            # We also need to stop those threads we already added to next_threads_list?
-            # No, if we find a match NOW, it's better than anything else in THIS character lineage.
             break
 
         if char == None and itype != OP_MATCH:

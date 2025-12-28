@@ -186,7 +186,6 @@ def _new_set_builder(case_insensitive = False):
 
     def add_negated_posix(pset):
         # pset is a list of atoms (chars or ranges)
-        # pset is a list of atoms (chars or ranges)
         state["negated_posix_list"] += [pset]
 
         # Update ASCII list
@@ -194,15 +193,6 @@ def _new_set_builder(case_insensitive = False):
             # Check if k is in pset
             in_pset = False
             for item in pset:
-                # item is char "c" or range ("c1", "c2")
-                # _PREDEFINED_CLASSES values are ([("0", "9")], False).
-                # _POSIX_CLASSES values are [("0", "9"), ...].
-                # So item is always a range tuple?
-                # Let's check _get_posix_class returns list of tuples.
-                # _compile_bracket_class calls add_negated_posix with atom.negated_atoms
-                # _parse_set_atom returns negated_atoms=pset (from _get_posix_class)
-                # So yes, pset is list of (start_char, end_char) tuples.
-
                 # Check ranges
                 s, e = item
                 if k >= _ORD_LOOKUP[s] and k <= _ORD_LOOKUP[e]:
@@ -317,6 +307,7 @@ def _parse_escape(pattern, i, pattern_len):
         return "U", i
 
     if char >= "0" and char <= "7":
+        # Octal
         oct_str = char
         consumed = 0
         if i + 1 < pattern_len and pattern[i + 1] >= "0" and pattern[i + 1] <= "7":
@@ -766,7 +757,6 @@ def _optimize_greedy_loops(instructions):
         new_insts += [inst]
 
     # Remap PCs
-    # Standard remapping logic:
     for i in range(num_insts):
         if i not in old_to_new:
             # It was skipped.
