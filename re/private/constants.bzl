@@ -3,23 +3,74 @@
 MAX_GROUP_NAME_LEN = 32
 
 # Bytecode Instructions
-OP_CHAR = 0  # Match specific character
-OP_ANY = 1  # Match any character (including \n)
-OP_SPLIT = 2  # Jump to pc1 or pc2
-OP_JUMP = 3  # Jump to pc
-OP_SAVE = 4  # Save current index
-OP_MATCH = 5  # Success
-OP_SET = 6  # Match any in set
-OP_ANCHOR_START = 7  # Match absolute start
-OP_ANCHOR_END = 8  # Match absolute end
-OP_WORD_BOUNDARY = 9  # Match if word/non-word transition
-OP_NOT_WORD_BOUNDARY = 10  # Match if no word/non-word transition
-OP_ANY_NO_NL = 11  # Match any character EXCEPT \n
-OP_ANCHOR_LINE_START = 12  # Match start or after \n
-OP_ANCHOR_LINE_END = 13  # Match end or before \n
-OP_STRING = 14  # Match string literally
-OP_GREEDY_LOOP = 15  # Optimization: Fast-path for x*
-OP_UNGREEDY_LOOP = 16  # Optimization: Fast-path for x*?
+
+# Match specific character
+# Format: (op, val, is_ci, None)
+OP_CHAR = 0
+
+# Match any character (including \n)
+# Format: (op, None, None, None)
+OP_ANY = 1
+
+# Jump to pc1 or pc2 (Thompson NFA choice)
+# Format: (op, None, pc1, pc2)
+OP_SPLIT = 2
+
+# Jump to pc
+# Format: (op, None, target, None)
+OP_JUMP = 3
+
+# Save current index to group slot
+# Format: (op, None, slot, None)
+OP_SAVE = 4
+
+# Match success
+# Format: (op, None, None, None)
+OP_MATCH = 5
+
+# Match any character in a set (char class)
+# Format: (op, (set_struct, is_negated), is_ci, None)
+OP_SET = 6
+
+# Match absolute start of input
+# Format: (op, None, None, None)
+OP_ANCHOR_START = 7
+
+# Match absolute end of input
+# Format: (op, None, None, None)
+OP_ANCHOR_END = 8
+
+# Match a word boundary (\b)
+# Format: (op, None, None, None)
+OP_WORD_BOUNDARY = 9
+
+# Match a non-word boundary (\B)
+# Format: (op, None, None, None)
+OP_NOT_WORD_BOUNDARY = 10
+
+# Match any character EXCEPT \n
+# Format: (op, None, None, None)
+OP_ANY_NO_NL = 11
+
+# Match start of line or after \n
+# Format: (op, None, None, None)
+OP_ANCHOR_LINE_START = 12
+
+# Match end of line or before \n
+# Format: (op, None, None, None)
+OP_ANCHOR_LINE_END = 13
+
+# Match string literally
+# Format: (op, val, is_ci, None)
+OP_STRING = 14
+
+# Optimization: Greedy loop for character/set
+# Format: (op, val, exit_pc, is_ci)
+OP_GREEDY_LOOP = 15
+
+# Optimization: Ungreedy loop for character/set
+# Format: (op, val, exit_pc, is_ci)
+OP_UNGREEDY_LOOP = 16
 
 # Flags
 I = 2  # buildifier: disable=confusing-name
