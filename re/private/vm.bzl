@@ -93,7 +93,7 @@ def _char_in_set(set_struct, c):
 
 # buildifier: disable=list-append
 # buildifier: disable=function-docstring-args
-def _get_epsilon_closure(instructions, input_str, input_len, start_pc, start_regs, current_idx, visited, visited_gen, greedy_cache, input_lower = None, word_mask = None):
+def _get_epsilon_closure(instructions, input_str, input_len, start_pc, start_regs, current_idx, visited, visited_gen, loop_cache, input_lower = None, word_mask = None):
     reachable = []
     num_inst = len(instructions)
 
@@ -190,7 +190,7 @@ def _get_epsilon_closure(instructions, input_str, input_len, start_pc, start_reg
                 is_ci = inst[3]  # arg2 = is_ci
 
                 # Check cache
-                last_end = greedy_cache.get(pc, -1)
+                last_end = loop_cache.get(pc, -1)
 
                 if last_end >= current_idx:
                     match_len = last_end - current_idx
@@ -201,7 +201,7 @@ def _get_epsilon_closure(instructions, input_str, input_len, start_pc, start_reg
                         input_to_strip = input_lower
 
                     match_len = _windowed_lstrip(input_to_strip, chars, current_idx)
-                    greedy_cache[pc] = current_idx + match_len
+                    loop_cache[pc] = current_idx + match_len
 
                 if match_len == 0:
                     # Epsilon transition to Exit
@@ -224,7 +224,7 @@ def _get_epsilon_closure(instructions, input_str, input_len, start_pc, start_reg
                     # Use cache to check if we can consume
                     chars = inst[1]  # val
                     is_ci = inst[3]  # arg2 = is_ci
-                    last_end = greedy_cache.get(pc, -1)
+                    last_end = loop_cache.get(pc, -1)
                     match_len = 0
 
                     if last_end >= current_idx:
@@ -236,7 +236,7 @@ def _get_epsilon_closure(instructions, input_str, input_len, start_pc, start_reg
                             input_to_strip = input_lower
 
                         match_len = _windowed_lstrip(input_to_strip, chars, current_idx)
-                        greedy_cache[pc] = current_idx + match_len
+                        loop_cache[pc] = current_idx + match_len
 
                     if match_len > 0:
                         reachable += [(pc, regs)]
@@ -384,7 +384,7 @@ def execute(instructions, input_str, num_regs, start_index = 0, end_index = None
 
     visited = [0] * len(instructions)
     visited_gen = 0
-    greedy_cache = {}
+    loop_cache = {}
 
     current_threads = [(0, initial_regs, 0)]
     best_match_regs = None
@@ -400,13 +400,13 @@ def execute(instructions, input_str, num_regs, start_index = 0, end_index = None
                 expanded_batch += [(s_pc, s_regs, s_skip)]
                 continue
 
-            closure = _get_epsilon_closure(instructions, input_str, input_len, s_pc, s_regs, char_idx, visited, visited_gen, greedy_cache, input_lower = input_lower, word_mask = word_mask)
+            closure = _get_epsilon_closure(instructions, input_str, input_len, s_pc, s_regs, char_idx, visited, visited_gen, loop_cache, input_lower = input_lower, word_mask = word_mask)
             for c_pc, c_regs in closure:
                 expanded_batch += [(c_pc, c_regs, char_idx)]
 
         if not anchored and char_idx <= input_len:
             if visited[0] < visited_gen + 2:
-                closure0 = _get_epsilon_closure(instructions, input_str, input_len, 0, initial_regs[:], char_idx, visited, visited_gen, greedy_cache, input_lower = input_lower, word_mask = word_mask)
+                closure0 = _get_epsilon_closure(instructions, input_str, input_len, 0, initial_regs[:], char_idx, visited, visited_gen, loop_cache, input_lower = input_lower, word_mask = word_mask)
                 for c_pc, c_regs in closure0:
                     expanded_batch += [(c_pc, c_regs, char_idx)]
 
