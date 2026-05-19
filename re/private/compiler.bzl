@@ -609,13 +609,13 @@ def _remap_inst(inst, old_to_new):
 
     return inst
 
-# buildifier: disable=list-append
 def _shift_insts(insts, atom_start, new_start):
     """Copies instructions from atom_start to end, shifting jumps."""
     delta = new_start - atom_start
     template = insts[atom_start:]
     return _shift_template(template, atom_start, delta)
 
+# buildifier: disable=list-append
 def _shift_template(template, old_start, delta):
     """Copies a sliced instruction block, shifting absolute jumps."""
     new_block = []
