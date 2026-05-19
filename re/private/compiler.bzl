@@ -609,12 +609,6 @@ def _remap_inst(inst, old_to_new):
 
     return inst
 
-def _shift_insts(insts, atom_start, new_start):
-    """Copies instructions from atom_start to end, shifting jumps."""
-    delta = new_start - atom_start
-    template = insts[atom_start:]
-    return _shift_template(template, atom_start, delta)
-
 # buildifier: disable=list-append
 def _shift_template(template, old_start, delta):
     """Copies a sliced instruction block, shifting absolute jumps."""
@@ -887,7 +881,8 @@ def _build_alt_tree(instructions, group_ctx):
 # buildifier: disable=list-append
 def _apply_question_mark(insts, atom_start, lazy = False):
     """Applies ? logic. Lazy=True tries skipping first."""
-    new_block = _shift_insts(insts, atom_start, atom_start + 1)
+    template = insts[atom_start:]
+    new_block = _shift_template(template, atom_start, 1)
 
     # Remove original atom
     for _ in range(len(insts) - atom_start):
@@ -909,7 +904,8 @@ def _apply_question_mark(insts, atom_start, lazy = False):
 # buildifier: disable=list-append
 def _apply_star(insts, atom_start, lazy = False):
     """Applies * logic. Lazy=True tries skipping first."""
-    new_block = _shift_insts(insts, atom_start, atom_start + 1)
+    template = insts[atom_start:]
+    new_block = _shift_template(template, atom_start, 1)
 
     # Remove original atom
     for _ in range(len(insts) - atom_start):
