@@ -609,11 +609,15 @@ def _remap_inst(inst, old_to_new):
 
     return inst
 
-# buildifier: disable=list-append
 def _shift_insts(insts, atom_start, new_start):
     """Copies instructions from atom_start to end, shifting jumps."""
     delta = new_start - atom_start
     template = insts[atom_start:]
+    return _shift_template(template, atom_start, delta)
+
+# buildifier: disable=list-append
+def _shift_template(template, old_start, delta):
+    """Copies a sliced instruction block, shifting absolute jumps."""
     new_block = []
 
     for inst in template:
@@ -621,25 +625,25 @@ def _shift_insts(insts, atom_start, new_start):
 
         if itype == OP_JUMP:
             target = inst[2]  # arg1
-            if target != None and target >= atom_start:
+            if target != None and target >= old_start:
                 target += delta
             new_block += [(OP_JUMP, val, target, None)]
         elif itype == OP_SPLIT:
             pc1 = inst[2]  # arg1
             pc2 = inst[3]  # arg2
-            if pc1 != None and pc1 >= atom_start:
+            if pc1 != None and pc1 >= old_start:
                 pc1 += delta
-            if pc2 != None and pc2 >= atom_start:
+            if pc2 != None and pc2 >= old_start:
                 pc2 += delta
             new_block += [(OP_SPLIT, val, pc1, pc2)]
         elif itype == OP_GREEDY_LOOP:
             exit_pc = inst[2]  # arg1
-            if exit_pc != None and exit_pc >= atom_start:
+            if exit_pc != None and exit_pc >= old_start:
                 exit_pc += delta
             new_block += [(OP_GREEDY_LOOP, val, exit_pc, inst[3])]
         elif itype == OP_UNGREEDY_LOOP:
             exit_pc = inst[2]  # arg1
-            if exit_pc != None and exit_pc >= atom_start:
+            if exit_pc != None and exit_pc >= old_start:
                 exit_pc += delta
             new_block += [(OP_UNGREEDY_LOOP, val, exit_pc, inst[3])]
         else:
@@ -1004,18 +1008,18 @@ def _handle_quantifier(pattern, i, insts, atom_start = -1, ungreedy = False):
 
                 # Expand Min
                 for _ in range(min_rep):
-                    insts += _shift_insts(template, 0, len(insts))
+                    insts += _shift_template(template, atom_start, len(insts) - atom_start)
 
                 # Expand Max
                 if max_rep == -1:
                     block_start = len(insts)
-                    insts += _shift_insts(template, 0, block_start)
+                    insts += _shift_template(template, atom_start, block_start - atom_start)
                     _apply_star(insts, block_start, lazy = is_lazy)
 
                 elif max_rep > min_rep:
                     for _ in range(max_rep - min_rep):
                         block_start = len(insts)
-                        insts += _shift_insts(template, 0, block_start)
+                        insts += _shift_template(template, atom_start, block_start - atom_start)
                         _apply_question_mark(insts, block_start, lazy = is_lazy)
 
                 return final_i

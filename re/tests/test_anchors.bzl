@@ -25,6 +25,8 @@ def _test_anchors(env):
         ("\\b\\w+\\b", "Orange", {0: "Orange"}),
         ("\\b", " ", None),
         ("\\B", "a", None),
+        ("^\\d+(\\.\\d+){0,3}$", "6.0.2.3611", {0: "6.0.2.3611"}),
+        ("^\\d+(\\.\\d+){0,3}$", "6.0.2.3611.7", None),
     ]
     run_suite(env, "Anchors & Boundaries", cases)
 
