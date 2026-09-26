@@ -3,8 +3,8 @@ Tests for fast-path repetition optimizations.
 """
 
 load("@rules_testing//lib:unit_test.bzl", "unit_test")
-load("//re:re.bzl", "match")
-load("//re/tests:utils.bzl", "assert_span", "run_suite")
+load("//re:re.bzl", "compile", "findall", "match", "search", "split", "sub")
+load("//re/tests:utils.bzl", "assert_eq", "assert_span", "run_suite")
 
 def _test_optimization(env):
     run_tests_optimization(env)
@@ -91,3 +91,23 @@ def _run_match_fast_path_tests(env):
     ]
     for pattern, text, expected in cases:
         assert_span(env, match(pattern, text), expected, "match(%r, %r)" % (pattern, text))
+
+    _run_search_end_anchored_tests(env)
+
+def _run_search_end_anchored_tests(env):
+    """Checks the `prefix [set]* suffix$` search fast path."""
+
+    # `[set]+` needs at least one character.
+    assert_span(env, search(r"\d+$", "abc"), None, "search \\d+$ without digits")
+    assert_span(env, search(r"x[ab]+$", "x"), None, "search x[ab]+$ without set chars")
+    assert_span(env, search(r"x[ab]+$", "xab"), (0, 3), "search x[ab]+$")
+
+    # A single prefix set char is not a loop.
+    assert_span(env, search(r"[xy][ab]*b$", "zxabab"), (1, 6), "search [xy][ab]*b$")
+    assert_span(env, search(r"[xy][ab]*b$", "zabab"), None, "search [xy][ab]*b$ without prefix set char")
+
+    # The match must not start before start_index (later findall/sub/split iterations).
+    assert_span(env, compile(r"[ab]*c$").search("abc", 1), (1, 3), "search [ab]*c$ with pos=1")
+    assert_eq(env, findall(r"\d+$", "a1b22"), ["22"], "findall \\d+$")
+    assert_eq(env, split(r",$", "a,b,"), ["a,b", ""], "split ,$")
+    assert_eq(env, sub(r"\s+$", "", "a b  "), "a b", "sub \\s+$")

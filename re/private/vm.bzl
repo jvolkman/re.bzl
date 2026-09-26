@@ -593,7 +593,9 @@ def search_regs(bytecode, text, group_count, start_index = 0, end_index = None, 
             # If anchored at start, search is just match
             return match_regs(bytecode, text, group_count, start_index = start_index, end_index = end_index, has_case_insensitive = has_case_insensitive, opt = opt, input_lower = input_lower, word_mask = word_mask)
 
-        if opt.is_anchored_end and not has_case_insensitive:
+        # Only `...prefix [set]* suffix$` and `...prefix [set]+ suffix$` are handled here.
+        prefix_set_is_plus = opt.prefix_set_chars != None and opt.prefix_set_chars == opt.greedy_set_chars
+        if opt.is_anchored_end and not has_case_insensitive and (opt.prefix_set_chars == None or prefix_set_is_plus):
             # Case: ...sets...suffix$
             if text.startswith(opt.suffix, effective_len - len(opt.suffix)):
                 # Work backwards from the suffix
@@ -608,17 +610,22 @@ def search_regs(bytecode, text, group_count, start_index = 0, end_index = None, 
                 # else: no greedy_set_chars
 
                 match_start = greedy_start
-                prefix_ok = True
+
+                # `[set]+` needs at least one character from the set.
+                prefix_ok = not prefix_set_is_plus or greedy_start < before_suffix_idx
 
                 # Check prefix literal
                 if prefix_ok:
-                    if text[:match_start].endswith(opt.prefix):
+                    if text.endswith(opt.prefix, 0, match_start):
                         match_start -= len(opt.prefix)
 
-                        regs = [-1] * ((group_count + 1) * 2 + 1)
-                        regs[0] = match_start
-                        regs[1] = effective_len
-                        return regs
+                        # A match starting before start_index (e.g. a later findall
+                        # iteration) is not a valid result; fall through.
+                        if match_start >= start_index:
+                            regs = [-1] * ((group_count + 1) * 2 + 1)
+                            regs[0] = match_start
+                            regs[1] = effective_len
+                            return regs
 
         # General case search optimization: skipping to prefix or suffix
         if opt.prefix != "":
