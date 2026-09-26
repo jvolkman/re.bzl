@@ -18,7 +18,7 @@ load(
 )
 
 # Types
-_FUNCTION_TYPE = type(len)
+_STRING_TYPE = type("")
 
 def compile(pattern, flags = 0):
     """Compiles a regex pattern into a reusable object.
@@ -236,9 +236,9 @@ def sub(pattern, repl, text, count = 0, flags = 0):
     opt = compiled.opt
     named_groups = compiled.named_groups
 
-    # Pre-parse replacement string if it's a string
+    # Pre-parse replacement string if it's a string; otherwise it is a function.
     repl_template = None
-    if type(repl) != _FUNCTION_TYPE:
+    if type(repl) == _STRING_TYPE:
         repl_template = parse_replacement_template(repl, named_groups)
 
     input_lower = None
@@ -276,10 +276,10 @@ def sub(pattern, repl, text, count = 0, flags = 0):
                 groups += [text[s:e]]
         groups = tuple(groups)
 
-        if type(repl) == _FUNCTION_TYPE:
-            # Slow path: Create proper match object using vm.MatchObject
-            # Use the loaded MatchObject
-            m = MatchObject(text, regs, compiled, start_index, text_len)
+        if repl_template == None:
+            # Slow path: Create proper match object using vm.MatchObject.
+            # Like Python, pos/endpos describe the whole sub() call.
+            m = MatchObject(text, regs, compiled, 0, text_len)
             replacement = repl(m)
         else:
             replacement = expand_template(repl_template, match_str, groups)

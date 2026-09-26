@@ -15,6 +15,9 @@ def api_test(name):
         impl = _test_api,
     )
 
+def _bracket_group1(m):
+    return "[" + m.group(1) + "]"
+
 def run_tests_api(env):
     """Runs API tests.
 
@@ -226,3 +229,10 @@ def run_tests_api(env):
     assert_eq(env, split("(?i)a*?", "bAc"), ["", "b", "", "", "c", ""], "split case-insensitive lazy loop")
     assert_eq(env, split("(a)|b*", "cabd"), ["", None, "c", "a", "", None, "", None, "d", None, ""], "split keeps None for unmatched groups")
     assert_eq(env, split("", "ab"), ["", "a", "b", ""], "split empty pattern")
+
+    # 18. sub() with a replacement function
+    assert_eq(env, sub(r"(\d)", _bracket_group1, "a1b2"), "a[1]b[2]", "sub with a def replacement")
+    assert_eq(env, sub(r"\w+", lambda m: m.group(0).upper(), "ab cd"), "AB CD", "sub with a lambda replacement")
+    assert_eq(env, sub("(a)|b", lambda m: m.group(1) or "-", "ab"), "a-", "sub replacement sees unmatched groups as None")
+    assert_eq(env, sub("x*", lambda m: "<" + m.group(0) + ">", "axxb"), "<>a<xx><>b<>", "sub replacement with empty matches")
+    assert_eq(env, sub("b", lambda m: "%d,%d" % (m.pos, m.endpos), "abcb"), "a0,4c0,4", "sub replacement match pos/endpos")
