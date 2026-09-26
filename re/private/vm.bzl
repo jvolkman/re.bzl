@@ -376,15 +376,9 @@ def execute(instructions, input_str, num_regs, start_index = 0, end_index = None
     if input_lower == None and has_case_insensitive:
         input_lower = input_str.lower()
 
-    # Pre-calculate word mask for boundary checks
-    if word_mask == None:
-        has_boundary = False
-        for inst in instructions:
-            if inst[0] == OP_WORD_BOUNDARY or inst[0] == OP_NOT_WORD_BOUNDARY:
-                has_boundary = True
-                break
-        if has_boundary:
-            word_mask = [c in _WORD_CHARS for c in input_str.elems()]
+    # Word boundaries are checked lazily (O(1) per check) in _get_epsilon_closure.
+    # Precomputing a mask over the entire input here would cost O(len(input)) on
+    # every call, which dominates repeated match()/search() calls on large inputs.
 
     visited = [0] * len(instructions)
     visited_gen = 0
