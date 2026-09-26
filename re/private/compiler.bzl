@@ -1574,3 +1574,70 @@ def optimize_matcher(instructions):
         )
 
     return None
+
+# buildifier: disable=list-append
+def compute_first_skip(instructions):
+    """Computes the characters that can never begin a match.
+
+    The VM uses this to skip, via a native lstrip(), over input positions where no
+    match can start. Zero-width assertions are treated as transparent, which can only
+    enlarge the set of possible first characters (a safe over-approximation).
+
+    Args:
+      instructions: The optimized bytecode.
+
+    Returns:
+      A string of characters that cannot begin a match, or None if the analysis does
+      not apply (the pattern can match the empty string, or starts with '.', a negated
+      or complex set, or a case-insensitive atom).
+    """
+    num_insts = len(instructions)
+    seen = {}
+    first = {}
+    stack = [0]
+    for _ in range(2 * num_insts + 2):
+        if not stack:
+            break
+        pc = stack.pop()
+        if pc in seen:
+            continue
+        if pc >= num_insts:
+            return None
+        seen[pc] = True
+        inst = instructions[pc]
+        op = inst[0]
+        if op == OP_JUMP:
+            stack += [inst[2]]
+        elif op == OP_SPLIT:
+            stack += [inst[2], inst[3]]
+        elif (op == OP_SAVE or op == OP_ANCHOR_START or op == OP_ANCHOR_END or
+              op == OP_ANCHOR_LINE_START or op == OP_ANCHOR_LINE_END or
+              op == OP_WORD_BOUNDARY or op == OP_NOT_WORD_BOUNDARY):
+            stack += [pc + 1]
+        elif op == OP_CHAR:
+            if inst[2]:
+                return None
+            first[inst[1]] = True
+        elif op == OP_STRING:
+            if inst[2]:
+                return None
+            first[inst[1][0]] = True
+        elif op == OP_SET:
+            set_struct, is_negated = inst[1]
+            if is_negated or inst[2] or not set_struct.is_simple:
+                return None
+            for c in set_struct.all_chars.elems():
+                first[c] = True
+        elif op == OP_GREEDY_LOOP or op == OP_UNGREEDY_LOOP:
+            if inst[3]:
+                return None
+            for c in inst[1].elems():
+                first[c] = True
+            stack += [inst[2]]  # The loop may match zero characters.
+        else:
+            # OP_MATCH (empty match possible), OP_ANY, OP_ANY_NO_NL, ...
+            return None
+    if stack:
+        return None
+    skip = "".join([c for c in _CHR_LOOKUP.elems() if c not in first])
+    return skip if skip else None

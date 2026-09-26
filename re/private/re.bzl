@@ -3,6 +3,7 @@
 load(
     "//re/private:compiler.bzl",
     "compile_regex",
+    "compute_first_skip",
     "optimize_matcher",
 )
 load(
@@ -56,9 +57,10 @@ def compile(pattern, flags = 0):
 
     bytecode, named_groups, group_count, has_case_insensitive = compile_regex(pattern, flags = flags)
     opt = optimize_matcher(bytecode)
+    first_skip = compute_first_skip(bytecode)
 
     def _search(text, pos = 0, endpos = None):
-        return search_bytecode(bytecode, text, named_groups, group_count, start_index = pos, end_index = endpos, has_case_insensitive = has_case_insensitive, opt = opt)
+        return search_bytecode(bytecode, text, named_groups, group_count, start_index = pos, end_index = endpos, has_case_insensitive = has_case_insensitive, opt = opt, first_skip = first_skip)
 
     def _match(text, pos = 0, endpos = None):
         return match_bytecode(bytecode, text, named_groups, group_count, start_index = pos, end_index = endpos, has_case_insensitive = has_case_insensitive, opt = opt)
@@ -76,6 +78,7 @@ def compile(pattern, flags = 0):
         pattern = pattern,
         has_case_insensitive = has_case_insensitive,
         opt = opt,
+        first_skip = first_skip,
     )
 
 def search(pattern, text, flags = 0, pos = 0, endpos = None):
@@ -93,7 +96,7 @@ def search(pattern, text, flags = 0, pos = 0, endpos = None):
       See `compile` for details on MatchObject.
     """
     compiled = compile(pattern, flags = flags)
-    return search_bytecode(compiled.bytecode, text, compiled.named_groups, compiled.group_count, start_index = pos, end_index = endpos, has_case_insensitive = compiled.has_case_insensitive, opt = compiled.opt)
+    return search_bytecode(compiled.bytecode, text, compiled.named_groups, compiled.group_count, start_index = pos, end_index = endpos, has_case_insensitive = compiled.has_case_insensitive, opt = compiled.opt, first_skip = compiled.first_skip)
 
 def match(pattern, text, flags = 0, pos = 0, endpos = None):
     """Try to apply the pattern at the start of the string.
@@ -161,7 +164,7 @@ def findall(pattern, text, flags = 0):
 
     # Max possible matches is len(text) + 1 (for empty matches)
     for _ in range(text_len + 2):
-        regs = search_regs(bytecode, text, group_count, start_index = start_index, has_case_insensitive = has_case_insensitive, opt = opt, input_lower = input_lower)
+        regs = search_regs(bytecode, text, group_count, start_index = start_index, has_case_insensitive = has_case_insensitive, opt = opt, input_lower = input_lower, first_skip = compiled.first_skip)
         if not regs:
             break
 
@@ -245,7 +248,7 @@ def sub(pattern, repl, text, count = 0, flags = 0):
             break
 
         # Use search_regs to avoid creating MatchObject
-        regs = search_regs(bytecode, text, group_count, start_index = start_index, has_case_insensitive = has_case_insensitive, opt = opt, input_lower = input_lower)
+        regs = search_regs(bytecode, text, group_count, start_index = start_index, has_case_insensitive = has_case_insensitive, opt = opt, input_lower = input_lower, first_skip = compiled.first_skip)
         if not regs:
             break
 
@@ -330,7 +333,7 @@ def split(pattern, text, maxsplit = 0, flags = 0):
         if maxsplit > 0 and splits_found >= maxsplit:
             break
 
-        regs = search_regs(bytecode, text, group_count, start_index = start_index, has_case_insensitive = has_case_insensitive, opt = opt, input_lower = input_lower)
+        regs = search_regs(bytecode, text, group_count, start_index = start_index, has_case_insensitive = has_case_insensitive, opt = opt, input_lower = input_lower, first_skip = compiled.first_skip)
         if not regs:
             break
 

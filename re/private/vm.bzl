@@ -351,7 +351,7 @@ def _process_batch(instructions, batch, input_str, current_idx, input_len, input
     return next_threads_list, best_match_regs, matched_priority_index
 
 # buildifier: disable=list-append
-def execute(instructions, input_str, num_regs, start_index = 0, end_index = None, initial_regs = None, anchored = False, has_case_insensitive = False, input_lower = None, word_mask = None, require_end = False):
+def execute(instructions, input_str, num_regs, start_index = 0, end_index = None, initial_regs = None, anchored = False, has_case_insensitive = False, input_lower = None, word_mask = None, require_end = False, first_skip = None):
     """Executes the bytecode on the input string.
 
     Args:
@@ -366,6 +366,7 @@ def execute(instructions, input_str, num_regs, start_index = 0, end_index = None
       input_lower: Pre-calculated lowercase input string.
       word_mask: Pre-calculated word character mask.
       require_end: If True, only matches that end at end_index count (fullmatch).
+      first_skip: Optional string of characters that can never begin a match.
 
     Returns:
       A list of registers (start/end indices) or None.
@@ -386,10 +387,25 @@ def execute(instructions, input_str, num_regs, start_index = 0, end_index = None
     visited_gen = 0
     loop_cache = {}
 
-    current_threads = [(0, initial_regs, 0)]
+    # Unanchored searches seed a start thread at every position below.
+    current_threads = [] if not anchored else [(0, initial_regs, 0)]
     best_match_regs = None
+    use_skip = first_skip != None and not anchored
 
-    for char_idx in range(start_index, input_len + 1):
+    char_idx = start_index - 1
+    for _ in range(start_index, input_len + 1):
+        char_idx += 1
+        if char_idx > input_len:
+            break
+
+        if use_skip and not current_threads and best_match_regs == None:
+            # No live threads: jump to the next position where a match can begin.
+            skip = _windowed_lstrip(input_str, first_skip, char_idx)
+            if char_idx + skip >= input_len:
+                # No remaining position can begin a (non-empty) match.
+                break
+            char_idx += skip
+
         # Expand epsilon closure for current threads
         visited_gen += 3
         expanded_batch = []
@@ -556,7 +572,7 @@ def expand_replacement(repl, match_str, groups, named_groups = {}):
     template = parse_replacement_template(repl, named_groups)
     return expand_template(template, match_str, groups)
 
-def search_regs(bytecode, text, group_count, start_index = 0, end_index = None, has_case_insensitive = False, opt = None, input_lower = None, word_mask = None):
+def search_regs(bytecode, text, group_count, start_index = 0, end_index = None, has_case_insensitive = False, opt = None, input_lower = None, word_mask = None, first_skip = None):
     """Executes a search returning registers.
 
     The returned `regs` is a flat list of integers representing [start, end] pairs for each group.
@@ -576,6 +592,7 @@ def search_regs(bytecode, text, group_count, start_index = 0, end_index = None, 
       opt: Optimization data.
       input_lower: Pre-calculated lowercase input string.
       word_mask: Pre-calculated word character mask.
+      first_skip: Characters that can never begin a match (see compute_first_skip).
 
     Returns:
       List of registers (start/end indices) or None.
@@ -722,7 +739,7 @@ def search_regs(bytecode, text, group_count, start_index = 0, end_index = None, 
             return None
 
     num_regs = (group_count + 1) * 2
-    return execute(bytecode, text, num_regs, start_index = start_index, end_index = end_index, anchored = False, has_case_insensitive = has_case_insensitive, input_lower = input_lower, word_mask = word_mask)
+    return execute(bytecode, text, num_regs, start_index = start_index, end_index = end_index, anchored = False, has_case_insensitive = has_case_insensitive, input_lower = input_lower, word_mask = word_mask, first_skip = first_skip)
 
 def match_regs(bytecode, text, group_count, start_index = 0, end_index = None, has_case_insensitive = False, opt = None, input_lower = None, word_mask = None):
     """Executes a match returning registers.
@@ -1004,7 +1021,7 @@ def MatchObject(text, regs, compiled, pos, endpos):
         lastgroup = lastgroup,
     )
 
-def search_bytecode(bytecode, text, named_groups, group_count, start_index = 0, end_index = None, has_case_insensitive = False, opt = None, input_lower = None, word_mask = None):
+def search_bytecode(bytecode, text, named_groups, group_count, start_index = 0, end_index = None, has_case_insensitive = False, opt = None, input_lower = None, word_mask = None, first_skip = None):
     """Executes a search using bytecode.
 
     Args:
@@ -1018,11 +1035,12 @@ def search_bytecode(bytecode, text, named_groups, group_count, start_index = 0, 
       opt: Optimization data.
       input_lower: Pre-calculated lowercase input string.
       word_mask: Pre-calculated word character mask.
+      first_skip: Characters that can never begin a match (see compute_first_skip).
 
     Returns:
       A MatchObject or None.
     """
-    regs = search_regs(bytecode, text, group_count, start_index = start_index, end_index = end_index, has_case_insensitive = has_case_insensitive, opt = opt, input_lower = input_lower, word_mask = word_mask)
+    regs = search_regs(bytecode, text, group_count, start_index = start_index, end_index = end_index, has_case_insensitive = has_case_insensitive, opt = opt, input_lower = input_lower, word_mask = word_mask, first_skip = first_skip)
     if not regs:
         return None
 

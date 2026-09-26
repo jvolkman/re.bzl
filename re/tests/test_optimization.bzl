@@ -70,6 +70,7 @@ def run_tests_optimization(env):
     _run_match_fast_path_tests(env)
     _run_search_end_anchored_tests(env)
     _run_search_suffix_endpos_tests(env)
+    _run_first_skip_tests(env)
 
 def _run_match_fast_path_tests(env):
     """Checks that the anchored match() fast path agrees with the NFA."""
@@ -125,3 +126,19 @@ def _run_search_suffix_endpos_tests(env):
     assert_span(env, prog.search("abcab", 0, 2), None, "search [ab]*c with endpos before the suffix")
     assert_span(env, prog.search("abcab", 0, 3), (0, 3), "search [ab]*c with endpos after the suffix")
     assert_span(env, compile(r"\s*;").search("a ;b", 0, 2), None, "search \\s*; with endpos before the suffix")
+
+def _run_first_skip_tests(env):
+    """Checks the first-character prefilter used by unanchored search."""
+    assert_eq(env, compile("x*").first_skip, None, "no first_skip when the pattern can match empty")
+    assert_eq(env, compile("(?i)a").first_skip, None, "no first_skip for case-insensitive first atoms")
+    assert_eq(env, compile(".a").first_skip, None, "no first_skip for patterns starting with .")
+    skip = compile(r"a|\bbc").first_skip
+    assert_eq(env, "a" in skip or "b" in skip, False, "first_skip excludes possible first chars")
+    assert_eq(env, "z" in skip, True, "first_skip includes impossible first chars")
+
+    assert_span(env, search("a|bc", "zzbc"), (2, 4), "search a|bc")
+    assert_span(env, search(r"\bfoo", "xfoo foo"), (5, 8), "search \\bfoo")
+    assert_span(env, search("(?:ab|cd)+e", "xxabcdcde"), (2, 9), "search (?:ab|cd)+e")
+    assert_span(env, search("[xy]", "aaa"), None, "search [xy] without candidates")
+    assert_span(env, compile("[bc]").search("aab", 0, 2), None, "search [bc] with endpos before the candidate")
+    assert_eq(env, findall("[0-9]+", "a1b22c333"), ["1", "22", "333"], "findall [0-9]+")
