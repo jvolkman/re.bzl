@@ -683,9 +683,11 @@ def _optimize_greedy_loops(instructions):
             if pc1 > i and pc1 < num_insts and pc2 > i and pc2 < num_insts:
                 # Case 1: Greedy Loop Split(Body, Exit)
                 # pc1 = Body, pc2 = Exit
+                # The rewrite drops the two instructions after the split, so the body
+                # must immediately follow it.
                 body_inst = instructions[pc1]
                 loop_back_pc = pc1 + 1
-                if loop_back_pc < num_insts:
+                if pc1 == i + 1 and loop_back_pc < num_insts:
                     loop_inst = instructions[loop_back_pc]
                     if (loop_inst[0] == OP_JUMP and loop_inst[2] == i) or \
                        (loop_inst[0] == OP_SPLIT and (loop_inst[2] == i or loop_inst[3] == i)):
@@ -701,7 +703,7 @@ def _optimize_greedy_loops(instructions):
                 # pc1 = Exit, pc2 = Body
                 body_inst = instructions[pc2]
                 loop_back_pc = pc2 + 1
-                if loop_back_pc < num_insts:
+                if pc2 == i + 1 and loop_back_pc < num_insts:
                     loop_inst = instructions[loop_back_pc]
                     if (loop_inst[0] == OP_JUMP and loop_inst[2] == i) or \
                        (loop_inst[0] == OP_SPLIT and (loop_inst[2] == i or loop_inst[3] == i)):
@@ -858,25 +860,29 @@ def _optimize_bytecode(instructions):
 
 # buildifier: disable=list-append
 def _build_alt_tree(instructions, group_ctx):
+    """Inserts the alternation dispatch (a chain of SPLITs) in front of the group body.
+
+    The body is shifted down rather than relocating its first instruction, so jumps
+    that target the first branch from inside the group (e.g. the loop of `a+` in
+    `a+|b`) keep targeting the branch instead of re-entering the dispatch.
+    """
     branches = group_ctx["branch_starts"]
     entry_pc = branches[0]
-    orig_inst = instructions[entry_pc]
-    relocated_pc = len(instructions)
-    instructions += [orig_inst]
-    instructions += [(OP_JUMP, None, entry_pc + 1, None)]
+    num_splits = len(branches) - 1
 
-    tree_start_pc = len(instructions)
-    current_branches = branches[:]
-    current_branches[0] = relocated_pc
+    template = instructions[entry_pc:]
+    new_block = _shift_template(template, entry_pc, num_splits)
+    for _ in range(len(template)):
+        instructions.pop()
 
-    for j in range(len(current_branches) - 1):
-        if j < len(current_branches) - 2:
-            next_split = len(instructions) + 1
-            instructions += [(OP_SPLIT, None, current_branches[j], next_split)]
+    for j in range(num_splits):
+        if j < num_splits - 1:
+            instructions += [(OP_SPLIT, None, branches[j] + num_splits, len(instructions) + 1)]
         else:
-            instructions += [(OP_SPLIT, None, current_branches[j], current_branches[-1])]
+            instructions += [(OP_SPLIT, None, branches[j] + num_splits, branches[j + 1] + num_splits)]
 
-    instructions[entry_pc] = (OP_JUMP, None, tree_start_pc, None)
+    instructions += new_block
+    group_ctx["exit_jumps"] = [j + num_splits for j in group_ctx["exit_jumps"]]
 
 # buildifier: disable=list-append
 def _apply_question_mark(insts, atom_start, lazy = False):

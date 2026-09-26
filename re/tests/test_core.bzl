@@ -59,6 +59,18 @@ def run_tests_core(env):
         ("a*", "aaa", {0: "aaa"}),  # Greedy
         ("a*?", "aaa", {0: ""}),  # Lazy
 
+        # Loops in an alternation branch must not re-enter the alternation.
+        ("a+|b", "ab", {0: "a"}),
+        ("[a-z]+|[0-9]+", "ab12", {0: "ab"}),
+        ("\\s+|#.*", " #x", {0: " "}),
+        ("(?:(?:x|y)+|b)", "xyb", {0: "xy"}),
+        ("(?:a+|b)+c", "abac", {0: "abac"}),
+        ("(a|ab)(c|bcd)(d*)", "abcd", {0: "abcd", 1: "a", 2: "bcd", 3: ""}),
+
+        # Empty first alternative.
+        ("(|b)c", "bc", {0: "bc", 1: "b"}),
+        ("(?:|b)c", "bc", {0: "bc"}),
+
         # 7. Stress Tests: Long Literal
         ("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789", "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789", {0: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"}),
         (".*", "abc\ndef", {0: "abc"}),  # Dot without s flag
