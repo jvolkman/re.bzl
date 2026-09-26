@@ -137,7 +137,8 @@ def findall(pattern, text, flags = 0):
     """Return all non-overlapping matches of pattern in string, as a list of strings.
 
     If one or more groups are present in the pattern, return a list of groups.
-    Empty matches are included in the result.
+    Empty matches are included in the result. As in Python 3.7+, a non-empty match
+    may start where the previous empty match ended.
 
     Args:
       pattern: The regex pattern string or a compiled regex object.
@@ -151,6 +152,7 @@ def findall(pattern, text, flags = 0):
     group_count = compiled.group_count
     matches = []
     start_index = 0
+    must_advance = False
     text_len = len(text)
 
     # Cache access to frequently used values
@@ -162,9 +164,10 @@ def findall(pattern, text, flags = 0):
     if has_case_insensitive:
         input_lower = text.lower()
 
-    # Max possible matches is len(text) + 1 (for empty matches)
-    for _ in range(text_len + 2):
-        regs = search_regs(bytecode, text, group_count, start_index = start_index, has_case_insensitive = has_case_insensitive, opt = opt, input_lower = input_lower, first_skip = compiled.first_skip)
+    # At most text_len + 1 empty and text_len non-empty matches, plus the final
+    # failed search.
+    for _ in range(2 * text_len + 2):
+        regs = search_regs(bytecode, text, group_count, start_index = start_index, has_case_insensitive = has_case_insensitive, opt = opt, input_lower = input_lower, first_skip = compiled.first_skip, must_advance = must_advance)
         if not regs:
             break
 
@@ -190,21 +193,19 @@ def findall(pattern, text, flags = 0):
                     groups += [text[s:e]]
             matches += [tuple(groups)]
 
-        # Advance start_index
-        if match_end > match_start:
-            start_index = match_end
-        else:
-            # Empty match, advance by 1 to avoid infinite loop
-            start_index = match_end + 1
-
-        if start_index > text_len:
-            break
+        # The next match may start where this one ended, but must not be empty
+        # there if this one was empty.
+        must_advance = match_end == match_start
+        start_index = match_end
 
     return matches
 
 # buildifier: disable=list-append
 def sub(pattern, repl, text, count = 0, flags = 0):
     """Return the string obtained by replacing the leftmost non-overlapping occurrences of the pattern in text by the replacement repl.
+
+    Empty matches are replaced too. As in Python 3.7+, a non-empty match may start
+    where the previous empty match ended.
 
     Args:
       pattern: The regex pattern string or a compiled regex object.
@@ -224,6 +225,7 @@ def sub(pattern, repl, text, count = 0, flags = 0):
     res_parts = []
     last_idx = 0
     start_index = 0
+    must_advance = False
     text_len = len(text)
     matches_found = 0
 
@@ -243,12 +245,14 @@ def sub(pattern, repl, text, count = 0, flags = 0):
     if has_case_insensitive:
         input_lower = text.lower()
 
-    for _ in range(text_len + 2):
+    # At most text_len + 1 empty and text_len non-empty matches, plus the final
+    # failed search.
+    for _ in range(2 * text_len + 2):
         if count > 0 and matches_found >= count:
             break
 
         # Use search_regs to avoid creating MatchObject
-        regs = search_regs(bytecode, text, group_count, start_index = start_index, has_case_insensitive = has_case_insensitive, opt = opt, input_lower = input_lower, first_skip = compiled.first_skip)
+        regs = search_regs(bytecode, text, group_count, start_index = start_index, has_case_insensitive = has_case_insensitive, opt = opt, input_lower = input_lower, first_skip = compiled.first_skip, must_advance = must_advance)
         if not regs:
             break
 
@@ -285,14 +289,10 @@ def sub(pattern, repl, text, count = 0, flags = 0):
         last_idx = match_end
         matches_found += 1
 
-        # Advance start_index
-        if match_end > match_start:
-            start_index = match_end
-        else:
-            start_index = match_end + 1
-
-        if start_index > text_len:
-            break
+        # The next match may start where this one ended, but must not be empty
+        # there if this one was empty.
+        must_advance = match_end == match_start
+        start_index = match_end
 
     res_parts += [text[last_idx:]]
     return "".join(res_parts)
@@ -300,6 +300,9 @@ def sub(pattern, repl, text, count = 0, flags = 0):
 # buildifier: disable=list-append
 def split(pattern, text, maxsplit = 0, flags = 0):
     """Split the source string by the occurrences of the pattern, returning a list containing the resulting substrings.
+
+    Empty matches split the string too. As in Python 3.7+, a non-empty match may
+    start where the previous empty match ended.
 
     Args:
       pattern: The regex pattern string or a compiled regex object.
@@ -316,6 +319,7 @@ def split(pattern, text, maxsplit = 0, flags = 0):
     res_parts = []
     last_idx = 0
     start_index = 0
+    must_advance = False
     text_len = len(text)
     splits_found = 0
 
@@ -329,11 +333,13 @@ def split(pattern, text, maxsplit = 0, flags = 0):
     if has_case_insensitive:
         input_lower = text.lower()
 
-    for _ in range(text_len + 2):
+    # At most text_len + 1 empty and text_len non-empty matches, plus the final
+    # failed search.
+    for _ in range(2 * text_len + 2):
         if maxsplit > 0 and splits_found >= maxsplit:
             break
 
-        regs = search_regs(bytecode, text, group_count, start_index = start_index, has_case_insensitive = has_case_insensitive, opt = opt, input_lower = input_lower, first_skip = compiled.first_skip)
+        regs = search_regs(bytecode, text, group_count, start_index = start_index, has_case_insensitive = has_case_insensitive, opt = opt, input_lower = input_lower, first_skip = compiled.first_skip, must_advance = must_advance)
         if not regs:
             break
 
@@ -359,14 +365,10 @@ def split(pattern, text, maxsplit = 0, flags = 0):
         last_idx = match_end
         splits_found += 1
 
-        # Advance start_index
-        if match_end > match_start:
-            start_index = match_end
-        else:
-            start_index = match_end + 1
-
-        if start_index > text_len:
-            break
+        # The next match may start where this one ended, but must not be empty
+        # there if this one was empty.
+        must_advance = match_end == match_start
+        start_index = match_end
 
     res_parts += [text[last_idx:]]
     return res_parts

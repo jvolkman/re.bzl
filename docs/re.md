@@ -63,7 +63,8 @@ re.findall(<a href="#re.findall-pattern">pattern</a>, <a href="#re.findall-text"
 Return all non-overlapping matches of pattern in string, as a list of strings.
 
 If one or more groups are present in the pattern, return a list of groups.
-Empty matches are included in the result.
+Empty matches are included in the result. As in Python 3.7+, a non-empty match
+may start where the previous empty match ended.
 
 
 **PARAMETERS**
@@ -179,6 +180,10 @@ re.split(<a href="#re.split-pattern">pattern</a>, <a href="#re.split-text">text<
 
 Split the source string by the occurrences of the pattern, returning a list containing the resulting substrings.
 
+Empty matches split the string too. As in Python 3.7+, a non-empty match may
+start where the previous empty match ended.
+
+
 **PARAMETERS**
 
 
@@ -205,6 +210,10 @@ re.sub(<a href="#re.sub-pattern">pattern</a>, <a href="#re.sub-repl">repl</a>, <
 </pre>
 
 Return the string obtained by replacing the leftmost non-overlapping occurrences of the pattern in text by the replacement repl.
+
+Empty matches are replaced too. As in Python 3.7+, a non-empty match may start
+where the previous empty match ended.
+
 
 **PARAMETERS**
 
