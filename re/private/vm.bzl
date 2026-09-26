@@ -678,7 +678,7 @@ def search_regs(bytecode, text, group_count, start_index = 0, end_index = None, 
                     break
 
                 # For unanchored search with prefix literal, simple skip:
-                regs = match_regs(bytecode, text, group_count, start_index = found_idx, end_index = end_index, has_case_insensitive = has_case_insensitive, opt = None, input_lower = input_lower, word_mask = word_mask)
+                regs = match_regs(bytecode, text, group_count, start_index = found_idx, end_index = end_index, has_case_insensitive = has_case_insensitive, opt = opt, input_lower = input_lower, word_mask = word_mask)
                 if regs:
                     return regs
 
@@ -742,7 +742,7 @@ def search_regs(bytecode, text, group_count, start_index = 0, end_index = None, 
                     regs[1] = found_idx + len(opt.suffix)
                     return regs
 
-                regs = match_regs(bytecode, text, group_count, start_index = search_start, end_index = end_index, has_case_insensitive = has_case_insensitive, opt = None, input_lower = input_lower, word_mask = word_mask)
+                regs = match_regs(bytecode, text, group_count, start_index = search_start, end_index = end_index, has_case_insensitive = has_case_insensitive, opt = opt, input_lower = input_lower, word_mask = word_mask)
                 if regs:
                     return regs
 
