@@ -741,7 +741,7 @@ def search_regs(bytecode, text, group_count, start_index = 0, end_index = None, 
     num_regs = (group_count + 1) * 2
     return execute(bytecode, text, num_regs, start_index = start_index, end_index = end_index, anchored = False, has_case_insensitive = has_case_insensitive, input_lower = input_lower, word_mask = word_mask, first_skip = first_skip)
 
-def match_regs(bytecode, text, group_count, start_index = 0, end_index = None, has_case_insensitive = False, opt = None, input_lower = None, word_mask = None):
+def match_regs(bytecode, text, group_count, start_index = 0, end_index = None, has_case_insensitive = False, opt = None, input_lower = None, word_mask = None, first_skip = None):
     """Executes a match returning registers.
 
     Args:
@@ -754,14 +754,19 @@ def match_regs(bytecode, text, group_count, start_index = 0, end_index = None, h
       opt: Optimization data.
       input_lower: Pre-calculated lowercase input string.
       word_mask: Pre-calculated word character mask.
+      first_skip: Characters that can never begin a match (see compute_first_skip).
 
     Returns:
       List of registers (start/end indices) or None.
     """
+    effective_len = len(text) if end_index == None else end_index
+
+    # O(1) reject: the character at start_index cannot begin a match.
+    if first_skip != None and (start_index >= effective_len or text[start_index] in first_skip):
+        return None
+
     if input_lower == None and has_case_insensitive:
         input_lower = text.lower()
-
-    effective_len = len(text) if end_index == None else end_index
 
     # Fast path optimization (the fast path does not evaluate `^`, so it only
     # applies at index 0 for start-anchored patterns).
@@ -849,7 +854,7 @@ def match_regs(bytecode, text, group_count, start_index = 0, end_index = None, h
     num_regs = (group_count + 1) * 2
     return execute(bytecode, text, num_regs, start_index = start_index, end_index = end_index, anchored = True, has_case_insensitive = has_case_insensitive, input_lower = input_lower, word_mask = word_mask)
 
-def fullmatch_regs(bytecode, text, group_count, start_index = 0, end_index = None, has_case_insensitive = False, opt = None, input_lower = None, word_mask = None):
+def fullmatch_regs(bytecode, text, group_count, start_index = 0, end_index = None, has_case_insensitive = False, opt = None, input_lower = None, word_mask = None, first_skip = None):
     """Executes a full match returning registers.
 
     Args:
@@ -862,14 +867,19 @@ def fullmatch_regs(bytecode, text, group_count, start_index = 0, end_index = Non
       opt: Optimization data.
       input_lower: Pre-calculated lowercase input string.
       word_mask: Pre-calculated word character mask.
+      first_skip: Characters that can never begin a match (see compute_first_skip).
 
     Returns:
       List of registers (start/end indices) or None.
     """
+    effective_len = len(text) if end_index == None else end_index
+
+    # O(1) reject: the character at start_index cannot begin a match.
+    if first_skip != None and (start_index >= effective_len or text[start_index] in first_skip):
+        return None
+
     if input_lower == None and has_case_insensitive:
         input_lower = text.lower()
-
-    effective_len = len(text) if end_index == None else end_index
 
     # Fast path optimization (the fast path does not evaluate `^`, so it only
     # applies at index 0 for start-anchored patterns).
@@ -1055,7 +1065,7 @@ def search_bytecode(bytecode, text, named_groups, group_count, start_index = 0, 
     effective_endpos = len(text) if end_index == None else end_index
     return MatchObject(text, regs, compiled, start_index, effective_endpos)
 
-def match_bytecode(bytecode, text, named_groups, group_count, start_index = 0, end_index = None, has_case_insensitive = False, opt = None, input_lower = None, word_mask = None):
+def match_bytecode(bytecode, text, named_groups, group_count, start_index = 0, end_index = None, has_case_insensitive = False, opt = None, input_lower = None, word_mask = None, first_skip = None):
     """Executes a match using bytecode.
 
     Args:
@@ -1069,11 +1079,12 @@ def match_bytecode(bytecode, text, named_groups, group_count, start_index = 0, e
       opt: Optimization data.
       input_lower: Pre-calculated lowercase input string.
       word_mask: Pre-calculated word character mask.
+      first_skip: Characters that can never begin a match (see compute_first_skip).
 
     Returns:
       A MatchObject or None.
     """
-    regs = match_regs(bytecode, text, group_count, start_index = start_index, end_index = end_index, has_case_insensitive = has_case_insensitive, opt = opt, input_lower = input_lower, word_mask = word_mask)
+    regs = match_regs(bytecode, text, group_count, start_index = start_index, end_index = end_index, has_case_insensitive = has_case_insensitive, opt = opt, input_lower = input_lower, word_mask = word_mask, first_skip = first_skip)
     if not regs:
         return None
 
@@ -1088,7 +1099,7 @@ def match_bytecode(bytecode, text, named_groups, group_count, start_index = 0, e
     effective_endpos = len(text) if end_index == None else end_index
     return MatchObject(text, regs, compiled, start_index, effective_endpos)
 
-def fullmatch_bytecode(bytecode, text, named_groups, group_count, start_index = 0, end_index = None, has_case_insensitive = False, opt = None, input_lower = None, word_mask = None):
+def fullmatch_bytecode(bytecode, text, named_groups, group_count, start_index = 0, end_index = None, has_case_insensitive = False, opt = None, input_lower = None, word_mask = None, first_skip = None):
     """Executes a full match using bytecode.
 
     Args:
@@ -1102,11 +1113,12 @@ def fullmatch_bytecode(bytecode, text, named_groups, group_count, start_index = 
       opt: Optimization data.
       input_lower: Pre-calculated lowercase input string.
       word_mask: Pre-calculated word character mask.
+      first_skip: Characters that can never begin a match (see compute_first_skip).
 
     Returns:
       A MatchObject or None.
     """
-    regs = fullmatch_regs(bytecode, text, group_count, start_index = start_index, end_index = end_index, has_case_insensitive = has_case_insensitive, opt = opt, input_lower = input_lower, word_mask = word_mask)
+    regs = fullmatch_regs(bytecode, text, group_count, start_index = start_index, end_index = end_index, has_case_insensitive = has_case_insensitive, opt = opt, input_lower = input_lower, word_mask = word_mask, first_skip = first_skip)
     if not regs:
         return None
 

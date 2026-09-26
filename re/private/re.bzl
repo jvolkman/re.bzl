@@ -63,10 +63,10 @@ def compile(pattern, flags = 0):
         return search_bytecode(bytecode, text, named_groups, group_count, start_index = pos, end_index = endpos, has_case_insensitive = has_case_insensitive, opt = opt, first_skip = first_skip)
 
     def _match(text, pos = 0, endpos = None):
-        return match_bytecode(bytecode, text, named_groups, group_count, start_index = pos, end_index = endpos, has_case_insensitive = has_case_insensitive, opt = opt)
+        return match_bytecode(bytecode, text, named_groups, group_count, start_index = pos, end_index = endpos, has_case_insensitive = has_case_insensitive, opt = opt, first_skip = first_skip)
 
     def _fullmatch(text, pos = 0, endpos = None):
-        return fullmatch_bytecode(bytecode, text, named_groups, group_count, start_index = pos, end_index = endpos, has_case_insensitive = has_case_insensitive, opt = opt)
+        return fullmatch_bytecode(bytecode, text, named_groups, group_count, start_index = pos, end_index = endpos, has_case_insensitive = has_case_insensitive, opt = opt, first_skip = first_skip)
 
     return struct(
         search = _search,
@@ -113,7 +113,7 @@ def match(pattern, text, flags = 0, pos = 0, endpos = None):
       See `compile` for details on MatchObject.
     """
     compiled = compile(pattern, flags = flags)
-    return match_bytecode(compiled.bytecode, text, compiled.named_groups, compiled.group_count, start_index = pos, end_index = endpos, has_case_insensitive = compiled.has_case_insensitive, opt = compiled.opt)
+    return match_bytecode(compiled.bytecode, text, compiled.named_groups, compiled.group_count, start_index = pos, end_index = endpos, has_case_insensitive = compiled.has_case_insensitive, opt = compiled.opt, first_skip = compiled.first_skip)
 
 def fullmatch(pattern, text, flags = 0, pos = 0, endpos = None):
     """Try to apply the pattern to the entire string.
@@ -130,7 +130,7 @@ def fullmatch(pattern, text, flags = 0, pos = 0, endpos = None):
       See `compile` for details on MatchObject.
     """
     compiled = compile(pattern, flags = flags)
-    return fullmatch_bytecode(compiled.bytecode, text, compiled.named_groups, compiled.group_count, start_index = pos, end_index = endpos, has_case_insensitive = compiled.has_case_insensitive, opt = compiled.opt)
+    return fullmatch_bytecode(compiled.bytecode, text, compiled.named_groups, compiled.group_count, start_index = pos, end_index = endpos, has_case_insensitive = compiled.has_case_insensitive, opt = compiled.opt, first_skip = compiled.first_skip)
 
 # buildifier: disable=list-append
 def findall(pattern, text, flags = 0):

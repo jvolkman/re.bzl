@@ -142,3 +142,13 @@ def _run_first_skip_tests(env):
     assert_span(env, search("[xy]", "aaa"), None, "search [xy] without candidates")
     assert_span(env, compile("[bc]").search("aab", 0, 2), None, "search [bc] with endpos before the candidate")
     assert_eq(env, findall("[0-9]+", "a1b22c333"), ["1", "22", "333"], "findall [0-9]+")
+
+    # match()/fullmatch() reject in O(1) when the first char cannot begin a match.
+    prog = compile("[ab]c")
+    assert_span(env, prog.match("xac", 1), (1, 3), "match [ab]c at pos=1")
+    assert_span(env, prog.match("xac", 0), None, "match [ab]c at a rejected char")
+    assert_span(env, compile("a").match("a", 1), None, "match a at the end")
+    assert_span(env, compile("ab").fullmatch("ab", 0, 1), None, "fullmatch ab with endpos=1")
+    assert_span(env, match("a+", ""), None, "match a+ on empty input")
+    assert_span(env, compile(r"\d+").match("ab12", 2), (2, 4), "match \\d+ at pos=2")
+    assert_span(env, compile(r"\d+").fullmatch("ab12", 2), (2, 4), "fullmatch \\d+ at pos=2")
