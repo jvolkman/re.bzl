@@ -119,7 +119,9 @@ def _get_epsilon_closure(instructions, input_str, input_len, start_pc, start_reg
             elif visited[pc] == visited_gen:
                 visited[pc] = visited_gen + 1
             else:
-                continue
+                # PC already fully explored in this generation; drop this thread.
+                # (`continue` here would spin on the same pc for inner_limit iterations.)
+                break
 
             if pc >= num_inst:
                 break
