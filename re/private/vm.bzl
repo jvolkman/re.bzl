@@ -696,6 +696,10 @@ def search_regs(bytecode, text, group_count, start_index = 0, end_index = None, 
                         if search_start + strip_len >= found_idx:
                             can_bypass = True
 
+                # The bypass does not evaluate `$`.
+                if can_bypass and opt.is_anchored_end and found_idx + len(opt.suffix) != effective_len:
+                    can_bypass = False
+
                 if can_bypass:
                     # Optimization: We know we matched everything up to suffix
                     regs = [-1] * ((group_count + 1) * 2 + 1)

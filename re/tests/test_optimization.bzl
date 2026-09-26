@@ -111,3 +111,10 @@ def _run_search_end_anchored_tests(env):
     assert_eq(env, findall(r"\d+$", "a1b22"), ["22"], "findall \\d+$")
     assert_eq(env, split(r",$", "a,b,"), ["a,b", ""], "split ,$")
     assert_eq(env, sub(r"\s+$", "", "a b  "), "a b", "sub \\s+$")
+
+    # The suffix bypass must still check `$`.
+    assert_span(env, search(r"(?i)\s*a$", "cAB"), None, "search (?i)\\s*a$ with suffix not at end")
+    assert_span(env, search(r"\s*a$", "a b"), None, "search \\s*a$ with suffix not at end")
+    assert_span(env, search(r"(?i)x*a$", "xAxa"), (2, 4), "search (?i)x*a$")
+    assert_span(env, search(r"1*?2$", "12 12"), (3, 5), "search 1*?2$")
+    assert_eq(env, findall(r"(?i)\s*a$", "a A"), [" A"], "findall (?i)\\s*a$")
