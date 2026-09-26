@@ -94,6 +94,16 @@ def _test_flags(env):
     assert_span(env, re.compile("(?i)ab").fullmatch("xAB", 1), (1, 3), "CI fullmatch at pos")
     assert_span(env, re.compile("(?i)abc|x").match("ABCD", 0, 2), None, "CI string past endpos")
 
+    # 4. fullmatch() with scoped flags: only the scoped part is case-insensitive
+    assert_span(env, re.fullmatch("(?i:x)[a-z]+", "xAB"), None, "CS loop after CI prefix")
+    assert_span(env, re.fullmatch("(?i:x)[a-z]+", "Xab"), (0, 3), "CI prefix before CS loop")
+    assert_span(env, re.fullmatch("(?i)x(?-i:[a-z]+)", "xAB"), None, "CS loop after (?-i:")
+    assert_span(env, re.fullmatch("(?i:x)[a-z]*C", "xabc"), None, "CS suffix after CI prefix")
+    assert_span(env, re.fullmatch("(?i:x)[a-c]", "xA"), None, "CS set after CI prefix")
+    assert_span(env, re.fullmatch("x(?i:[a-c]*)", "xAbC"), (0, 4), "CI loop after CS prefix")
+    assert_span(env, re.fullmatch("(?i)x[a-c]+", "XABC"), (0, 4), "all CI")
+    assert_span(env, re.fullmatch("(?i)ab[0-9]*CD", "AB12cd"), (0, 6), "all CI with suffix")
+
 def flags_test(name):
     unit_test(
         name = name,

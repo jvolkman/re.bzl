@@ -901,15 +901,21 @@ def fullmatch_regs(bytecode, text, group_count, start_index = 0, end_index = Non
     if opt and (start_index == 0 or not opt.is_anchored_start):
         # fullmatch() MUST match the entire string from start_index.
         # So it behaves like it has an implicit $ anchor.
-        check_text = text
+        # Each part is compared case-insensitively only if that part of the pattern is
+        # (scoped flags such as `(?i:x)[a-z]+` can mix both).
+        prefix_text = text
         check_prefix = opt.prefix
-        check_suffix = opt.suffix
         if opt.case_insensitive_prefix:
-            check_text = input_lower
+            prefix_text = input_lower
             check_prefix = opt.prefix.lower()
+        suffix_text = text
+        check_suffix = opt.suffix
+        if opt.is_suffix_case_insensitive:
+            suffix_text = input_lower
             check_suffix = opt.suffix.lower()
+        loop_text = input_lower if opt.is_greedy_case_insensitive else text
 
-        if effective_len >= len(opt.suffix) and check_text.startswith(check_prefix, start_index) and check_text.startswith(check_suffix, effective_len - len(opt.suffix)):
+        if effective_len >= len(opt.suffix) and prefix_text.startswith(check_prefix, start_index) and suffix_text.startswith(check_suffix, effective_len - len(opt.suffix)):
             match_end = start_index + len(opt.prefix)
             if match_end > effective_len - len(opt.suffix):
                 fast_path_ok = False
@@ -917,7 +923,9 @@ def fullmatch_regs(bytecode, text, group_count, start_index = 0, end_index = Non
                 fast_path_ok = True
 
             if opt.prefix_set_chars != None:
-                if match_end < effective_len and check_text[match_end] in opt.prefix_set_chars:
+                # Checked against the original text: exact for case-sensitive sets, and
+                # conservative (falls back to the NFA) for case-insensitive ones.
+                if match_end < effective_len and text[match_end] in opt.prefix_set_chars:
                     match_end += 1
                 else:
                     fast_path_ok = False
@@ -927,7 +935,7 @@ def fullmatch_regs(bytecode, text, group_count, start_index = 0, end_index = Non
                 middle_end = effective_len - len(opt.suffix)
                 if middle_end >= middle_start:
                     if opt.greedy_set_chars != None:
-                        strip_len = _windowed_lstrip(check_text, opt.greedy_set_chars, middle_start)
+                        strip_len = _windowed_lstrip(loop_text, opt.greedy_set_chars, middle_start)
                         if middle_start + strip_len >= middle_end:
                             match_end = effective_len
                         else:
