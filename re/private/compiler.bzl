@@ -609,41 +609,30 @@ def _remap_inst(inst, old_to_new):
 
     return inst
 
-# buildifier: disable=list-append
+def _shift_inst(inst, old_start, delta):
+    """Returns inst with its absolute jump targets >= old_start shifted by delta."""
+    itype = inst[0]
+    if itype == OP_JUMP:
+        target = inst[2]  # arg1
+        if target != None and target >= old_start:
+            return (OP_JUMP, inst[1], target + delta, None)
+    elif itype == OP_SPLIT:
+        pc1 = inst[2]  # arg1
+        pc2 = inst[3]  # arg2
+        if pc1 != None and pc1 >= old_start:
+            pc1 += delta
+        if pc2 != None and pc2 >= old_start:
+            pc2 += delta
+        return (OP_SPLIT, inst[1], pc1, pc2)
+    elif itype == OP_GREEDY_LOOP or itype == OP_UNGREEDY_LOOP:
+        exit_pc = inst[2]  # arg1
+        if exit_pc != None and exit_pc >= old_start:
+            return (itype, inst[1], exit_pc + delta, inst[3])  # arg2 = is_ci
+    return inst
+
 def _shift_template(template, old_start, delta):
     """Copies a sliced instruction block, shifting absolute jumps."""
-    new_block = []
-
-    for inst in template:
-        itype, val = inst[0], inst[1]
-
-        if itype == OP_JUMP:
-            target = inst[2]  # arg1
-            if target != None and target >= old_start:
-                target += delta
-            new_block += [(OP_JUMP, val, target, None)]
-        elif itype == OP_SPLIT:
-            pc1 = inst[2]  # arg1
-            pc2 = inst[3]  # arg2
-            if pc1 != None and pc1 >= old_start:
-                pc1 += delta
-            if pc2 != None and pc2 >= old_start:
-                pc2 += delta
-            new_block += [(OP_SPLIT, val, pc1, pc2)]
-        elif itype == OP_GREEDY_LOOP:
-            exit_pc = inst[2]  # arg1
-            if exit_pc != None and exit_pc >= old_start:
-                exit_pc += delta
-            new_block += [(OP_GREEDY_LOOP, val, exit_pc, inst[3])]
-        elif itype == OP_UNGREEDY_LOOP:
-            exit_pc = inst[2]  # arg1
-            if exit_pc != None and exit_pc >= old_start:
-                exit_pc += delta
-            new_block += [(OP_UNGREEDY_LOOP, val, exit_pc, inst[3])]
-        else:
-            new_block += [inst]
-
-    return new_block
+    return [_shift_inst(inst, old_start, delta) for inst in template]
 
 def _get_inst_chars(inst):
     """Extracts characters and case-insensitivity from an instruction."""
@@ -884,56 +873,40 @@ def _build_alt_tree(instructions, group_ctx):
     instructions += new_block
     group_ctx["exit_jumps"] = [j + num_splits for j in group_ctx["exit_jumps"]]
 
-# buildifier: disable=list-append
 def _apply_question_mark(insts, atom_start, lazy = False):
     """Applies ? logic. Lazy=True tries skipping first."""
-    template = insts[atom_start:]
-    new_block = _shift_template(template, atom_start, 1)
 
-    # Remove original atom
-    for _ in range(len(insts) - atom_start):
-        insts.pop()
+    # Shift the atom down by one to make room for a SPLIT in front of it.
+    skip_target = len(insts) + 1
+    for pc in range(atom_start, len(insts)):
+        insts[pc] = _shift_inst(insts[pc], atom_start, 1)
 
-    split_pc = len(insts)  # atom_start
-    insts += [None]  # Placeholder
-
-    atom_pc = len(insts)
-    insts += new_block
-
-    skip_target = len(insts)
-
+    atom_pc = atom_start + 1
     if lazy:
-        insts[split_pc] = (OP_SPLIT, None, skip_target, atom_pc)
+        insts.insert(atom_start, (OP_SPLIT, None, skip_target, atom_pc))
     else:
-        insts[split_pc] = (OP_SPLIT, None, atom_pc, skip_target)
+        insts.insert(atom_start, (OP_SPLIT, None, atom_pc, skip_target))
 
 # buildifier: disable=list-append
 def _apply_star(insts, atom_start, lazy = False):
     """Applies * logic. Lazy=True tries skipping first."""
-    template = insts[atom_start:]
-    new_block = _shift_template(template, atom_start, 1)
 
-    # Remove original atom
-    for _ in range(len(insts) - atom_start):
-        insts.pop()
+    # Shift the atom down by one to make room for a SPLIT in front of it.
+    end_split_pc = len(insts) + 1
+    skip_target = end_split_pc + 1
+    for pc in range(atom_start, len(insts)):
+        insts[pc] = _shift_inst(insts[pc], atom_start, 1)
 
-    split_pc = len(insts)  # atom_start
-    insts += [None]  # Placeholder
-
-    atom_pc = len(insts)
-    insts += new_block
+    split_pc = atom_start
+    atom_pc = atom_start + 1
 
     # Jump back replaced by SPLIT to allow one extra empty match for groups
-    end_split_pc = len(insts)
-    insts += [None]  # Placeholder
-    skip_target = len(insts)
-
     if lazy:
-        insts[end_split_pc] = (OP_SPLIT, None, skip_target, split_pc)
-        insts[split_pc] = (OP_SPLIT, None, skip_target, atom_pc)
+        insts.insert(split_pc, (OP_SPLIT, None, skip_target, atom_pc))
+        insts += [(OP_SPLIT, None, skip_target, split_pc)]
     else:
-        insts[end_split_pc] = (OP_SPLIT, None, split_pc, skip_target)
-        insts[split_pc] = (OP_SPLIT, None, atom_pc, skip_target)
+        insts.insert(split_pc, (OP_SPLIT, None, atom_pc, skip_target))
+        insts += [(OP_SPLIT, None, split_pc, skip_target)]
 
 # buildifier: disable=list-append
 def _apply_plus(insts, atom_start, lazy = False):
