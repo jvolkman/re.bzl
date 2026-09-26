@@ -36,6 +36,14 @@ def run_tests_api(env):
     assert_eq(env, findall("a+", "aa aba a"), ["aa", "a", "a", "a"], "findall simple")
     assert_eq(env, findall(r"(\w+)=(\d+)", "a=1 b=2"), [("a", "1"), ("b", "2")], "findall with groups")
 
+    # Result shape follows Python: one group gives strings, unmatched groups give "".
+    assert_eq(env, findall(r"(\w+)=\d+", "a=1 b=2"), ["a", "b"], "findall with one group")
+    assert_eq(env, findall(r"(?:1|2)+", "12 21"), ["12", "21"], "findall non-capturing group")
+    assert_eq(env, findall("(a)|b", "ab"), ["a", ""], "findall unmatched single group")
+    assert_eq(env, findall("a(b)?", "aab"), ["", "b"], "findall optional single group")
+    assert_eq(env, findall("(a)|(b)", "ab"), [("a", ""), ("", "b")], "findall unmatched groups in tuples")
+    assert_eq(env, findall(r"(?P<k>\w)=(?P<v>\d)?", "a=1 b="), [("a", "1"), ("b", "")], "findall named groups")
+
     # 3. sub
     assert_eq(env, sub("a+", "b", "aaabaa"), "bbb", "sub simple")
     assert_eq(env, sub(r"(\w+)=(\d+)", r"\2=\1", "a=1 b=2"), "1=a 2=b", "sub with backrefs")

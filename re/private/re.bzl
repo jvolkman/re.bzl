@@ -134,9 +134,14 @@ def fullmatch(pattern, text, flags = 0, pos = 0, endpos = None):
 
 # buildifier: disable=list-append
 def findall(pattern, text, flags = 0):
-    """Return all non-overlapping matches of pattern in string, as a list of strings.
+    """Return all non-overlapping matches of pattern in string, as a list of strings or tuples.
 
-    If one or more groups are present in the pattern, return a list of groups.
+    As in Python, the result depends on the number of capturing groups in the
+    pattern. With no groups, each item is the string matched by the whole pattern.
+    With one group, it is the string matched by that group. With more groups, it is
+    a tuple of the strings matched by the groups. A group that did not take part in
+    a match is reported as "".
+
     Empty matches are included in the result. As in Python 3.7+, a non-empty match
     may start where the previous empty match ended.
 
@@ -178,9 +183,12 @@ def findall(pattern, text, flags = 0):
             # Should not happen if execute returns non-None
             break
 
-        # Extract result
+        # Extract result (shaped like Python's: see the docstring)
         if group_count == 0:
             matches += [text[match_start:match_end]]
+        elif group_count == 1:
+            s = regs[2]
+            matches += [text[s:regs[3]] if s != -1 else ""]
         else:
             # Return groups
             groups = []
@@ -188,7 +196,7 @@ def findall(pattern, text, flags = 0):
                 s = regs[i * 2]
                 e = regs[i * 2 + 1]
                 if s == -1:
-                    groups += [None]
+                    groups += [""]
                 else:
                     groups += [text[s:e]]
             matches += [tuple(groups)]

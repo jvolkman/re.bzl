@@ -60,9 +60,14 @@ load("@re.bzl", "re")
 re.findall(<a href="#re.findall-pattern">pattern</a>, <a href="#re.findall-text">text</a>, <a href="#re.findall-flags">flags</a>)
 </pre>
 
-Return all non-overlapping matches of pattern in string, as a list of strings.
+Return all non-overlapping matches of pattern in string, as a list of strings or tuples.
 
-If one or more groups are present in the pattern, return a list of groups.
+As in Python, the result depends on the number of capturing groups in the
+pattern. With no groups, each item is the string matched by the whole pattern.
+With one group, it is the string matched by that group. With more groups, it is
+a tuple of the strings matched by the groups. A group that did not take part in
+a match is reported as "".
+
 Empty matches are included in the result. As in Python 3.7+, a non-empty match
 may start where the previous empty match ended.
 
