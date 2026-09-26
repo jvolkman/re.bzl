@@ -251,7 +251,7 @@ def _get_epsilon_closure(instructions, input_str, input_len, start_pc, start_reg
     return reachable
 
 # buildifier: disable=list-append
-def _process_batch(instructions, batch, input_str, current_idx, input_len, input_lower):
+def _process_batch(instructions, batch, input_str, current_idx, input_len, input_lower, require_end = False):
     """Processes a batch of threads against the current character.
 
     batch is a list of (pc, regs, skip_idx) in priority order (index 0 is highest).
@@ -280,6 +280,9 @@ def _process_batch(instructions, batch, input_str, current_idx, input_len, input
         itype = inst[0]
 
         if itype == OP_MATCH:
+            if require_end and current_idx != input_len:
+                # fullmatch(): a match that ends early is a dead thread, not a result.
+                continue
             if best_match_regs == None:
                 best_match_regs = regs
                 matched_priority_index = i
@@ -346,7 +349,7 @@ def _process_batch(instructions, batch, input_str, current_idx, input_len, input
     return next_threads_list, best_match_regs, matched_priority_index
 
 # buildifier: disable=list-append
-def execute(instructions, input_str, num_regs, start_index = 0, end_index = None, initial_regs = None, anchored = False, has_case_insensitive = False, input_lower = None, word_mask = None):
+def execute(instructions, input_str, num_regs, start_index = 0, end_index = None, initial_regs = None, anchored = False, has_case_insensitive = False, input_lower = None, word_mask = None, require_end = False):
     """Executes the bytecode on the input string.
 
     Args:
@@ -360,6 +363,7 @@ def execute(instructions, input_str, num_regs, start_index = 0, end_index = None
       has_case_insensitive: Whether the match is case insensitive.
       input_lower: Pre-calculated lowercase input string.
       word_mask: Pre-calculated word character mask.
+      require_end: If True, only matches that end at end_index count (fullmatch).
 
     Returns:
       A list of registers (start/end indices) or None.
@@ -425,6 +429,7 @@ def execute(instructions, input_str, num_regs, start_index = 0, end_index = None
                 char_idx,
                 input_len,
                 input_lower,
+                require_end,
             )
 
         if batch_match:
@@ -878,7 +883,7 @@ def fullmatch_regs(bytecode, text, group_count, start_index = 0, end_index = Non
                 return regs
 
     num_regs = (group_count + 1) * 2
-    regs = execute(bytecode, text, num_regs, start_index = start_index, end_index = end_index, anchored = True, has_case_insensitive = has_case_insensitive, input_lower = input_lower, word_mask = word_mask)
+    regs = execute(bytecode, text, num_regs, start_index = start_index, end_index = end_index, anchored = True, has_case_insensitive = has_case_insensitive, input_lower = input_lower, word_mask = word_mask, require_end = True)
     if regs and regs[1] != effective_len:
         return None
     return regs

@@ -4,7 +4,7 @@ Tests for the high-level API functions: findall, sub, split.
 
 load("@rules_testing//lib:unit_test.bzl", "unit_test")
 load("//re:re.bzl", "compile", "findall", "fullmatch", "match", "search", "split", "sub")
-load("//re/tests:utils.bzl", "assert_eq")
+load("//re/tests:utils.bzl", "assert_eq", "assert_span")
 
 def _test_api(env):
     run_tests_api(env)
@@ -180,3 +180,15 @@ def run_tests_api(env):
 
     m_no_named = search(r"(a)(b)", "ab")
     assert_eq(env, m_no_named.groupdict(), {}, "groupdict returns empty dict if no named groups")
+
+    # 16. fullmatch keeps exploring until a match ends at the end of the string
+    assert_span(env, fullmatch("a|ab", "ab"), (0, 2), "fullmatch tries later alternatives")
+    assert_span(env, fullmatch(r"\w+?", "abc"), (0, 3), "fullmatch extends lazy loops")
+    assert_span(env, fullmatch("a+?", "aa"), (0, 2), "fullmatch extends lazy char loops")
+    assert_span(env, fullmatch("(?:a|ab)(?:c|bcd)", "abcd"), (0, 4), "fullmatch backtracks into alternation")
+    assert_span(env, fullmatch("a|ab", "abc"), None, "fullmatch still rejects partial matches")
+    assert_span(env, compile("a|ab").fullmatch("abc", endpos = 2), (0, 2), "fullmatch respects endpos")
+    m_fm = fullmatch("(a|ab)(c|bcd)?", "abcd")
+    assert_eq(env, m_fm.groups() if m_fm else None, ("a", "bcd"), "fullmatch groups from the full-length path")
+    m_fm = fullmatch(r"(a+?)(a*?)", "aaa")
+    assert_eq(env, m_fm.groups() if m_fm else None, ("a", "aa"), "fullmatch groups with lazy loops")
