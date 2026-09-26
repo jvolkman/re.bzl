@@ -766,8 +766,11 @@ def match_regs(bytecode, text, group_count, start_index = 0, end_index = None, h
                         fast_path_ok = False
                 elif opt.suffix != "":
                     # Case: ^a*b (not anchored at end)
-                    # Find first occurrence of suffix after match_end
-                    found_idx = text.find(opt.suffix, match_end)
+                    # Find first occurrence of suffix after match_end.
+                    # Only valid for lazy loops, or greedy loops that cannot consume the suffix.
+                    if opt.greedy_set_chars != None and not opt.is_ungreedy_loop and not opt.is_suffix_disjoint:
+                        fast_path_ok = False
+                    found_idx = text.find(opt.suffix, match_end) if fast_path_ok else -1
                     if found_idx != -1 and found_idx + len(opt.suffix) <= effective_len:
                         # Check if everything between match_end and found_idx is in greedy_set
                         if opt.greedy_set_chars != None:
@@ -786,9 +789,10 @@ def match_regs(bytecode, text, group_count, start_index = 0, end_index = None, h
                         fast_path_ok = False
                 else:
                     # No suffix, not anchored at end
-                    if opt.greedy_set_chars != None:
-                        # Greedy match the rest.
-                        match_len = _windowed_lstrip(text[:effective_len], opt.greedy_set_chars, match_end)
+                    if opt.greedy_set_chars != None and not opt.is_ungreedy_loop:
+                        # Greedy match the rest. (A lazy loop matches zero iterations here.)
+                        strip_text = input_lower if opt.is_greedy_case_insensitive else text
+                        match_len = _windowed_lstrip(strip_text[:effective_len], opt.greedy_set_chars, match_end)
                         match_end += match_len
                     else:
                         # No greedy set, just prefix(+set)
