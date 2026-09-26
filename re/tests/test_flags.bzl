@@ -104,6 +104,16 @@ def _test_flags(env):
     assert_span(env, re.fullmatch("(?i)x[a-c]+", "XABC"), (0, 4), "all CI")
     assert_span(env, re.fullmatch("(?i)ab[0-9]*CD", "AB12cd"), (0, 6), "all CI with suffix")
 
+    # 5. Literal runs that mix case-sensitive and case-insensitive characters
+    assert_span(env, re.match("aA(?i:bx)", "ax"), None, "mixed prefix, no match")
+    assert_span(env, re.match("aA(?i:bx)", "aABX"), (0, 4), "mixed prefix")
+    assert_span(env, re.match("(?i:1)Ab$", ""), None, "mixed prefix on empty input")
+    assert_span(env, re.search("(?i)^(?-i:Ab)X", "CcB x"), None, "anchored mixed prefix, no match")
+    assert_span(env, re.search("(?i)^(?-i:Ab)X", "Abx"), (0, 3), "anchored mixed prefix")
+    assert_span(env, re.compile("(?i:A)b1").fullmatch("1", 1), None, "mixed prefix fullmatch at pos")
+    assert_span(env, re.fullmatch("(?i)x[ab]*?(?-i:A)", "xa"), None, "mixed suffix, no match")
+    assert_span(env, re.search("(?i)x[ab]*?(?-i:A)", "zXbA"), (1, 4), "mixed suffix")
+
 def flags_test(name):
     unit_test(
         name = name,

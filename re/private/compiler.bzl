@@ -1372,10 +1372,9 @@ def optimize_matcher(instructions):
         elif all_cs:
             case_insensitive_prefix = False
         else:
-            # Mixed prefix - unsafe for simple case-insensitive fast path search
-            # because .lower().find() will over-match.
-            prefix = ""
-            case_insensitive_prefix = False
+            # Mixed prefix (e.g. `a(?i:b)`): a single find()/startswith() can't check
+            # it, and dropping it would make the fast paths ignore these characters.
+            return None
 
     # After prefix, check for sets and loops
     prefix_set_chars = None
@@ -1524,9 +1523,8 @@ def optimize_matcher(instructions):
         elif all_ci:
             is_suffix_case_insensitive = True
         else:
-            # Mixed suffix - unsafe for clear search
-            suffix = ""
-            is_suffix_case_insensitive = False
+            # Mixed suffix: see the mixed prefix case above.
+            return None
 
     # Check for end anchor or save 1/match
     is_anchored_end = False
