@@ -28,12 +28,17 @@ load(
 # lead to O(N^2) memory and time behavior in Starlark for large inputs.
 _WINDOW_SIZE = 65536
 
-def _windowed_lstrip(s, chars, start):
-    """Lstrips chars from s[start:] using windowing to avoid large copies."""
+def _windowed_lstrip(s, chars, start, lower = False):
+    """Lstrips chars from s[start:] using windowing to avoid large copies.
+
+    If lower is True, each window is lowercased before stripping.
+    """
     n = len(s)
     pos = start
     for _ in range(n // _WINDOW_SIZE + 1):
         window = s[pos:pos + _WINDOW_SIZE]
+        if lower:
+            window = window.lower()
         if not window:
             break
         stripped = window.lstrip(chars)
@@ -198,11 +203,10 @@ def _get_epsilon_closure(instructions, input_str, input_len, start_pc, start_reg
                     match_len = last_end - current_idx
                 else:
                     # Compute and cache
-                    input_to_strip = input_str
                     if is_ci and input_lower != None:
-                        input_to_strip = input_lower
-
-                    match_len = _windowed_lstrip(input_to_strip, chars, current_idx)
+                        match_len = _windowed_lstrip(input_lower, chars, current_idx)
+                    else:
+                        match_len = _windowed_lstrip(input_str, chars, current_idx, lower = is_ci)
                     loop_cache[pc] = current_idx + match_len
 
                 if match_len == 0:
@@ -233,11 +237,10 @@ def _get_epsilon_closure(instructions, input_str, input_len, start_pc, start_reg
                         match_len = last_end - current_idx
                     else:
                         # Compute and cache
-                        input_to_strip = input_str
                         if is_ci and input_lower != None:
-                            input_to_strip = input_lower
-
-                        match_len = _windowed_lstrip(input_to_strip, chars, current_idx)
+                            match_len = _windowed_lstrip(input_lower, chars, current_idx)
+                        else:
+                            match_len = _windowed_lstrip(input_str, chars, current_idx, lower = is_ci)
                         loop_cache[pc] = current_idx + match_len
 
                     if match_len > 0:
@@ -253,7 +256,7 @@ def _get_epsilon_closure(instructions, input_str, input_len, start_pc, start_reg
     return reachable
 
 # buildifier: disable=list-append
-def _process_batch(instructions, batch, input_str, current_idx, input_len, input_lower, require_end = False):
+def _process_batch(instructions, batch, input_str, current_idx, input_len, input_lower, require_end = False, lower_on_demand = False):
     """Processes a batch of threads against the current character.
 
     batch is a list of (pc, regs, skip_idx) in priority order (index 0 is highest).
@@ -265,7 +268,12 @@ def _process_batch(instructions, batch, input_str, current_idx, input_len, input
     matched_priority_index = -1
 
     char = input_str[current_idx] if current_idx < input_len else None
-    char_lower = input_lower[current_idx] if input_lower != None and current_idx < input_len else None
+    char_lower = None
+    if char != None:
+        if input_lower != None:
+            char_lower = input_lower[current_idx]
+        elif lower_on_demand:
+            char_lower = char.lower()
 
     # Process in priority order (0 = highest)
     for i in range(len(batch)):
@@ -304,8 +312,8 @@ def _process_batch(instructions, batch, input_str, current_idx, input_len, input
         elif itype == OP_STRING:
             s = inst[1]  # val
             if inst[2]:  # arg1 = is_ci
-                if input_lower != None:
-                    if input_lower.startswith(s, current_idx):
+                if input_lower != None or lower_on_demand:
+                    if (input_lower.startswith(s, current_idx) if input_lower != None else input_str[current_idx:current_idx + len(s)].lower() == s):
                         match_len = len(s)
                         next_pc = pc + 1
                         if next_pc not in next_threads_dict:
@@ -376,8 +384,14 @@ def execute(instructions, input_str, num_regs, start_index = 0, end_index = None
 
     input_original_len = len(input_str)
     input_len = input_original_len if end_index == None else end_index
+    lower_on_demand = False
     if input_lower == None and has_case_insensitive:
-        input_lower = input_str.lower()
+        if anchored:
+            # match()/fullmatch() usually inspect a handful of characters; lowering the
+            # whole input on every call would cost O(len(input)).
+            lower_on_demand = True
+        else:
+            input_lower = input_str.lower()
 
     # Word boundaries are checked lazily (O(1) per check) in _get_epsilon_closure.
     # Precomputing a mask over the entire input here would cost O(len(input)) on
@@ -444,6 +458,7 @@ def execute(instructions, input_str, num_regs, start_index = 0, end_index = None
                 input_len,
                 input_lower,
                 require_end,
+                lower_on_demand,
             )
 
         if batch_match:
@@ -765,7 +780,7 @@ def match_regs(bytecode, text, group_count, start_index = 0, end_index = None, h
     if first_skip != None and (start_index >= effective_len or text[start_index] in first_skip):
         return None
 
-    if input_lower == None and has_case_insensitive:
+    if input_lower == None and has_case_insensitive and opt != None and (opt.case_insensitive_prefix or opt.is_greedy_case_insensitive or opt.is_suffix_case_insensitive):
         input_lower = text.lower()
 
     # Fast path optimization (the fast path does not evaluate `^`, so it only
@@ -878,7 +893,7 @@ def fullmatch_regs(bytecode, text, group_count, start_index = 0, end_index = Non
     if first_skip != None and (start_index >= effective_len or text[start_index] in first_skip):
         return None
 
-    if input_lower == None and has_case_insensitive:
+    if input_lower == None and has_case_insensitive and opt != None and (opt.case_insensitive_prefix or opt.is_greedy_case_insensitive or opt.is_suffix_case_insensitive):
         input_lower = text.lower()
 
     # Fast path optimization (the fast path does not evaluate `^`, so it only
