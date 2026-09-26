@@ -408,7 +408,9 @@ def execute(instructions, input_str, num_regs, start_index = 0, end_index = None
             for c_pc, c_regs in closure:
                 expanded_batch += [(c_pc, c_regs, char_idx)]
 
-        if not anchored and char_idx <= input_len:
+        # Leftmost-first semantics: once a match has been found, a thread seeded at a
+        # later start position can never win, so stop seeding new start positions.
+        if not anchored and best_match_regs == None:
             if visited[0] < visited_gen + 2:
                 closure0 = _get_epsilon_closure(instructions, input_str, input_len, 0, initial_regs[:], char_idx, visited, visited_gen, loop_cache, input_lower = input_lower, word_mask = word_mask)
                 for c_pc, c_regs in closure0:
@@ -449,6 +451,11 @@ def execute(instructions, input_str, num_regs, start_index = 0, end_index = None
                     return best_match_regs
 
         current_threads = next_threads
+
+        # All surviving threads have higher priority than the current best match. If none
+        # survive, nothing can improve on it.
+        if not current_threads and best_match_regs != None:
+            break
 
     return best_match_regs
 
