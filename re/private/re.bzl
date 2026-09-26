@@ -136,9 +136,9 @@ def fullmatch(pattern, text, flags = 0, pos = 0, endpos = None):
 def _find_all_regs(compiled, text, limit = 0):
     """Finds the non-overlapping matches of a compiled pattern in text.
 
-    This is the search loop shared by findall, sub and split. As in Python 3.7+,
-    a match may start where the previous match ended, but after an empty match,
-    another empty match at the same position is skipped.
+    This is the search loop shared by findall, finditer, sub and split. As in
+    Python 3.7+, a match may start where the previous match ended, but after an
+    empty match, another empty match at the same position is skipped.
 
     Args:
       compiled: The compiled regex object.
@@ -218,6 +218,31 @@ def findall(pattern, text, flags = 0):
         tuple([text[regs[i]:regs[i + 1]] if regs[i] != -1 else "" for i in group_starts])
         for regs in all_regs
     ]
+
+def finditer(pattern, text, flags = 0):
+    """Return a list of MatchObjects for all non-overlapping matches of pattern in text.
+
+    Unlike findall(), each item is a full MatchObject: every group is available,
+    with None for groups that did not take part in the match, along with its span.
+    Starlark has no iterators, so the result is a list.
+
+    Empty matches are included in the result. As in Python 3.7+, a non-empty match
+    may start where the previous empty match ended.
+
+    Args:
+      pattern: The regex pattern string or a compiled regex object.
+      text: The text to search.
+      flags: Regex flags (only if pattern is a string).
+
+    Returns:
+      A list of MatchObjects, in the order the matches were found.
+      See `compile` for details on MatchObject.
+    """
+    compiled = compile(pattern, flags = flags)
+    text_len = len(text)
+
+    # Like Python, pos/endpos describe the whole finditer() call.
+    return [MatchObject(text, regs, compiled, 0, text_len) for regs in _find_all_regs(compiled, text)]
 
 # buildifier: disable=list-append
 def sub(pattern, repl, text, count = 0, flags = 0):

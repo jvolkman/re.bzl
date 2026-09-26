@@ -1,6 +1,6 @@
 """Benchmarks for the Starlark regex engine."""
 
-load("//re:re.bzl", "compile", "findall", "match", "search", "split", "sub")
+load("//re:re.bzl", "compile", "findall", "finditer", "match", "search", "split", "sub")
 
 def benchmark_simple_match(n):
     p = compile("abc")
@@ -112,6 +112,12 @@ def benchmark_findall_words(n):
     for _ in range(n):
         findall(p, _WORDS_TEXT)
 
+def benchmark_finditer_numbers(n):
+    # Like findall_numbers, plus a MatchObject per match.
+    p = compile(r"\d+")
+    for _ in range(n):
+        finditer(p, _NUMBERS_TEXT)
+
 def benchmark_sub_whitespace(n):
     p = compile(r"\s+")
     for _ in range(n):
@@ -181,6 +187,8 @@ def run_benchmarks(n = 0):
     benchmark_findall_numbers(n // 200)
     print("Running findall_words...")
     benchmark_findall_words(n // 200)
+    print("Running finditer_numbers...")
+    benchmark_finditer_numbers(n // 200)
     print("Running sub_whitespace...")
     benchmark_sub_whitespace(n // 200)
     print("Running split_csv...")

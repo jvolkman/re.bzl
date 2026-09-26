@@ -25,6 +25,10 @@ result = re.sub(r"a+", "b", "abaac") # "bbbc"
 # Find All
 tokens = re.findall(r"\w+", "hello world") # ["hello", "world"]
 
+# Iterate over matches (a list of MatchObjects)
+for m in re.finditer(r"(\w+)=(\d+)", "a=1 b=2"):
+    print(m.group(1), m.span()) # "a" (0, 3), then "b" (4, 7)
+
 # Full Match
 is_exact = re.fullmatch(r"v\d+\.\d+", "v1.2") # <MatchObject> or None
 

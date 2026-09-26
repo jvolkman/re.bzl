@@ -15,6 +15,7 @@ def _test_root_import(env):
 
     # Test other functions on struct
     env.expect.that_str(re.search("a", "bat").group(0)).equals("a")
+    env.expect.that_str(re.finditer("a", "bat")[0].group(0)).equals("a")
 
 def root_import_test(name):
     unit_test(

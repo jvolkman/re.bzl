@@ -1,9 +1,9 @@
 """
-Tests for the high-level API functions: findall, sub, split.
+Tests for the high-level API functions: findall, finditer, sub, split.
 """
 
 load("@rules_testing//lib:unit_test.bzl", "unit_test")
-load("//re:re.bzl", "compile", "findall", "fullmatch", "match", "search", "split", "sub")
+load("//re:re.bzl", "IGNORECASE", "compile", "findall", "finditer", "fullmatch", "match", "search", "split", "sub")
 load("//re/tests:utils.bzl", "assert_eq", "assert_span")
 
 def _test_api(env):
@@ -244,3 +244,18 @@ def run_tests_api(env):
     assert_eq(env, sub("(a)|b", lambda m: m.group(1) or "-", "ab"), "a-", "sub replacement sees unmatched groups as None")
     assert_eq(env, sub("x*", lambda m: "<" + m.group(0) + ">", "axxb"), "<>a<xx><>b<>", "sub replacement with empty matches")
     assert_eq(env, sub("b", lambda m: "%d,%d" % (m.pos, m.endpos), "abcb"), "a0,4c0,4", "sub replacement match pos/endpos")
+
+    # 19. finditer(): a MatchObject per match, keeping None for unmatched groups
+    assert_eq(env, [m.group() for m in finditer(r"\d+", "a1b22c333")], ["1", "22", "333"], "finditer matches")
+    assert_eq(env, [m.span() for m in finditer(r"\d+", "a1b22c333")], [(1, 2), (3, 5), (6, 9)], "finditer spans")
+    assert_eq(env, [m.groups() for m in finditer("(a)|(b)", "ab")], [("a", None), (None, "b")], "finditer keeps None for unmatched groups")
+    assert_eq(env, [m.span(1) for m in finditer("a(b)?", "aab")], [(-1, -1), (2, 3)], "finditer group spans")
+    assert_eq(env, [m.groupdict() for m in finditer(r"(?P<k>\w)=(?P<v>\d)?", "a=1 b=")], [{"k": "a", "v": "1"}, {"k": "b", "v": None}], "finditer groupdict")
+    assert_eq(env, [m.lastgroup for m in finditer("(?P<x>a)|(?P<y>b)", "ab")], ["x", "y"], "finditer lastgroup")
+    assert_eq(env, [m.span() for m in finditer("x*", "abxd")], [(0, 0), (1, 1), (2, 3), (3, 3), (4, 4)], "finditer empty matches")
+    assert_eq(env, [m.span() for m in finditer("c??", "ca-")], [(0, 0), (0, 1), (1, 1), (2, 2), (3, 3)], "finditer non-empty match after an empty match")
+    assert_eq(env, [(m.pos, m.endpos, m.string) for m in finditer("b", "abcb")], [(0, 4, "abcb"), (0, 4, "abcb")], "finditer match pos/endpos/string")
+    assert_eq(env, [m.re.pattern for m in finditer("a", "aa")], ["a", "a"], "finditer match re")
+    assert_eq(env, finditer("x", "abc"), [], "finditer without matches")
+    assert_eq(env, [m.group() for m in finditer("a", "aAb", flags = IGNORECASE)], ["a", "A"], "finditer with flags")
+    assert_eq(env, [m.group() for m in finditer(compile("(?i)a"), "aAb")], ["a", "A"], "finditer with a compiled pattern")
