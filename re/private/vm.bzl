@@ -663,7 +663,7 @@ def search_regs(bytecode, text, group_count, start_index = 0, end_index = None, 
 
             start_off = start_index
             for _ in range(len(text)):
-                found_idx = search_text.find(search_suffix, start_off)
+                found_idx = search_text.find(search_suffix, start_off, effective_len)
                 if found_idx == -1:
                     break
 

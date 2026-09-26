@@ -68,6 +68,8 @@ def run_tests_optimization(env):
     run_suite(env, "Optimization Tests", cases)
 
     _run_match_fast_path_tests(env)
+    _run_search_end_anchored_tests(env)
+    _run_search_suffix_endpos_tests(env)
 
 def _run_match_fast_path_tests(env):
     """Checks that the anchored match() fast path agrees with the NFA."""
@@ -91,8 +93,6 @@ def _run_match_fast_path_tests(env):
     ]
     for pattern, text, expected in cases:
         assert_span(env, match(pattern, text), expected, "match(%r, %r)" % (pattern, text))
-
-    _run_search_end_anchored_tests(env)
 
 def _run_search_end_anchored_tests(env):
     """Checks the `prefix [set]* suffix$` search fast path."""
@@ -118,3 +118,10 @@ def _run_search_end_anchored_tests(env):
     assert_span(env, search(r"(?i)x*a$", "xAxa"), (2, 4), "search (?i)x*a$")
     assert_span(env, search(r"1*?2$", "12 12"), (3, 5), "search 1*?2$")
     assert_eq(env, findall(r"(?i)\s*a$", "a A"), [" A"], "findall (?i)\\s*a$")
+
+def _run_search_suffix_endpos_tests(env):
+    """Checks that the suffix search fast path honors endpos."""
+    prog = compile("[ab]*c")
+    assert_span(env, prog.search("abcab", 0, 2), None, "search [ab]*c with endpos before the suffix")
+    assert_span(env, prog.search("abcab", 0, 3), (0, 3), "search [ab]*c with endpos after the suffix")
+    assert_span(env, compile(r"\s*;").search("a ;b", 0, 2), None, "search \\s*; with endpos before the suffix")
