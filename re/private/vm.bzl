@@ -585,6 +585,11 @@ def search_regs(bytecode, text, group_count, start_index = 0, end_index = None, 
     # Fast path optimization
     if opt:
         if opt.is_anchored_start:
+            # `^` (without MULTILINE) only matches at index 0, never at a later
+            # start position (e.g. the next findall/sub/split iteration).
+            if start_index > 0:
+                return None
+
             # If anchored at start, search is just match
             return match_regs(bytecode, text, group_count, start_index = start_index, end_index = end_index, has_case_insensitive = has_case_insensitive, opt = opt, input_lower = input_lower, word_mask = word_mask)
 
@@ -727,8 +732,9 @@ def match_regs(bytecode, text, group_count, start_index = 0, end_index = None, h
 
     effective_len = len(text) if end_index == None else end_index
 
-    # Fast path optimization
-    if opt:
+    # Fast path optimization (the fast path does not evaluate `^`, so it only
+    # applies at index 0 for start-anchored patterns).
+    if opt and (start_index == 0 or not opt.is_anchored_start):
         # Simple anchored prefix match
         check_text = text
         check_prefix = opt.prefix
@@ -834,8 +840,9 @@ def fullmatch_regs(bytecode, text, group_count, start_index = 0, end_index = Non
 
     effective_len = len(text) if end_index == None else end_index
 
-    # Fast path optimization
-    if opt:
+    # Fast path optimization (the fast path does not evaluate `^`, so it only
+    # applies at index 0 for start-anchored patterns).
+    if opt and (start_index == 0 or not opt.is_anchored_start):
         # fullmatch() MUST match the entire string from start_index.
         # So it behaves like it has an implicit $ anchor.
         check_text = text
