@@ -3,7 +3,7 @@ Tests for regex quantifiers.
 """
 
 load("@rules_testing//lib:unit_test.bzl", "unit_test")
-load("//re:re.bzl", "compile")
+load("//re:re.bzl", "compile", "findall")
 load("//re/tests:utils.bzl", "assert_eq", "run_suite")
 
 def _test_quantifiers(env):
@@ -73,6 +73,7 @@ def run_tests_quantifiers(env):
     ]
     run_suite(env, "Quantifier Tests", cases)
     _run_empty_iteration_tests(env)
+    _run_lazy_loop_reentry_tests(env)
 
 def _run_empty_iteration_tests(env):
     """Checks that a loop stops after an iteration that matched nothing, as CPython does."""
@@ -102,6 +103,38 @@ def _run_empty_iteration_tests(env):
         ("(?:()|a)+?", "fullmatch", "a", [(0, 1), (0, 0)]),
         ("(?:()|a)+", "fullmatch", "a", [(0, 1), (1, 1)]),
     ]
+    _check_spans(env, cases)
+
+def _run_lazy_loop_reentry_tests(env):
+    """Checks lazy loops that a loop that can match empty enters twice at one position."""
+    cases = [
+        # 11. The second entry tries to exit before it consumes, as the first one does.
+        ("(a*?)*", "fullmatch", "aa", [(0, 2), (2, 2)]),
+        ("(a*?)+", "fullmatch", "aa", [(0, 2), (2, 2)]),
+        ("(a*?)*b", "search", "aab", [(0, 3), (2, 2)]),
+        ("(.*?)*$", "search", "ab", [(0, 2), (2, 2)]),
+        ("\\b(.*?)+$", "search", "a", [(0, 1), (1, 1)]),
+        ("(b|[ab]*?)+$", "search", "a", [(0, 1), (1, 1)]),
+        ("(b*?x?)+", "fullmatch", "b", [(0, 1), (1, 1)]),
+        ("x?(a*?|b+)*", "fullmatch", "bbaaa", [(0, 5), (5, 5)]),
+        ("(x|\\B[ab]*|.*?)*$", "search", "xaa1", [(0, 4), (4, 4)]),
+        ("(?:.*?|(1|)*|(?:b1|\\B)*?)*a", "fullmatch", "111aa", [(0, 5), (-1, -1)]),
+        ("(a*?|.)+.", "fullmatch", "bbbaaa", [(0, 6), (5, 5)]),
+        ("a(b*?|x){1,}$", "search", "abab", [(2, 4), (4, 4)]),
+
+        # These matched CPython before, and still do.
+        ("(a*?)*?b", "search", "aab", [(0, 3), (1, 2)]),
+        ("(?:(a*?)|b)*", "fullmatch", "ab", [(0, 2), (2, 2)]),
+    ]
+    _check_spans(env, cases)
+    assert_eq(
+        env,
+        findall("((\\w*?\\b)+)\\W*", "2"),
+        [("", ""), ("2", ""), ("", "")],
+        "findall('((\\\\w*?\\\\b)+)\\\\W*', '2')",
+    )
+
+def _check_spans(env, cases):
     for pattern, method, text, expected in cases:
         p = compile(pattern)
         m = {"fullmatch": p.fullmatch, "match": p.match, "search": p.search}[method](text)

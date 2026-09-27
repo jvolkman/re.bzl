@@ -664,6 +664,18 @@ def _optimize_greedy_loops(instructions):
     old_to_new = {}
     skip = 0
 
+    # OP_UNGREEDY_LOOP takes its exit on the first visit to its pc at a position and
+    # consumes on the second. Inside a loop whose body can match empty (a marked back
+    # edge, see _loop_back_mark), a lazy loop can be entered again at the same
+    # position, and that second entry would only consume: `(a*?)*` fullmatched "aa"
+    # with group 1 at (1, 2), not (2, 2). Those lazy loops stay SPLITs.
+    in_nullable_loop = {}
+    for j in range(num_insts):
+        inst = instructions[j]
+        if inst[0] == OP_SPLIT and inst[1] != None:
+            for k in range(inst[2] if inst[2] < inst[3] else inst[3], j):
+                in_nullable_loop[k] = True
+
     for i in range(num_insts):
         if skip > 0:
             skip -= 1
@@ -702,7 +714,7 @@ def _optimize_greedy_loops(instructions):
                 # pc1 = Exit, pc2 = Body
                 body_inst = instructions[pc2]
                 loop_back_pc = pc2 + 1
-                if pc2 == i + 1 and pc1 == i + 3 and loop_back_pc < num_insts:
+                if pc2 == i + 1 and pc1 == i + 3 and loop_back_pc < num_insts and i not in in_nullable_loop:
                     loop_inst = instructions[loop_back_pc]
                     if (loop_inst[0] == OP_JUMP and loop_inst[2] == i) or \
                        (loop_inst[0] == OP_SPLIT and (loop_inst[2] == i or loop_inst[3] == i)):
