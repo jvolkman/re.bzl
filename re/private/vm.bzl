@@ -1099,6 +1099,17 @@ def search_bytecode(bytecode, text, named_groups, group_count, start_index = 0, 
     Returns:
       A MatchObject or None.
     """
+
+    # Clamp pos and endpos to the string, like Python. This is inlined rather than a
+    # helper function: a lexer calls match() at every position, and one more function
+    # call per match() cost about 10% of such a loop.
+    n = len(text)
+    if end_index == None or end_index > n:
+        end_index = n
+    elif end_index < 0:
+        end_index = 0
+    if start_index < 0 or start_index > n:
+        start_index = 0 if start_index < 0 else n
     regs = search_regs(bytecode, text, group_count, start_index = start_index, end_index = end_index, has_case_insensitive = has_case_insensitive, opt = opt, input_lower = input_lower, word_mask = word_mask, first_skip = first_skip)
     if not regs:
         return None
@@ -1111,8 +1122,7 @@ def search_bytecode(bytecode, text, named_groups, group_count, start_index = 0, 
         has_case_insensitive = has_case_insensitive,
         opt = opt,
     )
-    effective_endpos = len(text) if end_index == None else end_index
-    return MatchObject(text, regs, compiled, start_index, effective_endpos)
+    return MatchObject(text, regs, compiled, start_index, end_index)
 
 def match_bytecode(bytecode, text, named_groups, group_count, start_index = 0, end_index = None, has_case_insensitive = False, opt = None, input_lower = None, word_mask = None, first_skip = None):
     """Executes a match using bytecode.
@@ -1133,6 +1143,15 @@ def match_bytecode(bytecode, text, named_groups, group_count, start_index = 0, e
     Returns:
       A MatchObject or None.
     """
+
+    # Clamp pos and endpos to the string, like Python (inlined; see search_bytecode).
+    n = len(text)
+    if end_index == None or end_index > n:
+        end_index = n
+    elif end_index < 0:
+        end_index = 0
+    if start_index < 0 or start_index > n:
+        start_index = 0 if start_index < 0 else n
     regs = match_regs(bytecode, text, group_count, start_index = start_index, end_index = end_index, has_case_insensitive = has_case_insensitive, opt = opt, input_lower = input_lower, word_mask = word_mask, first_skip = first_skip)
     if not regs:
         return None
@@ -1145,8 +1164,7 @@ def match_bytecode(bytecode, text, named_groups, group_count, start_index = 0, e
         has_case_insensitive = has_case_insensitive,
         opt = opt,
     )
-    effective_endpos = len(text) if end_index == None else end_index
-    return MatchObject(text, regs, compiled, start_index, effective_endpos)
+    return MatchObject(text, regs, compiled, start_index, end_index)
 
 def fullmatch_bytecode(bytecode, text, named_groups, group_count, start_index = 0, end_index = None, has_case_insensitive = False, opt = None, input_lower = None, word_mask = None, first_skip = None):
     """Executes a full match using bytecode.
@@ -1167,6 +1185,15 @@ def fullmatch_bytecode(bytecode, text, named_groups, group_count, start_index = 
     Returns:
       A MatchObject or None.
     """
+
+    # Clamp pos and endpos to the string, like Python (inlined; see search_bytecode).
+    n = len(text)
+    if end_index == None or end_index > n:
+        end_index = n
+    elif end_index < 0:
+        end_index = 0
+    if start_index < 0 or start_index > n:
+        start_index = 0 if start_index < 0 else n
     regs = fullmatch_regs(bytecode, text, group_count, start_index = start_index, end_index = end_index, has_case_insensitive = has_case_insensitive, opt = opt, input_lower = input_lower, word_mask = word_mask, first_skip = first_skip)
     if not regs:
         return None
@@ -1179,5 +1206,4 @@ def fullmatch_bytecode(bytecode, text, named_groups, group_count, start_index = 
         has_case_insensitive = has_case_insensitive,
         opt = opt,
     )
-    effective_endpos = len(text) if end_index == None else end_index
-    return MatchObject(text, regs, compiled, start_index, effective_endpos)
+    return MatchObject(text, regs, compiled, start_index, end_index)

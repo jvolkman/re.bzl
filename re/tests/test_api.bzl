@@ -187,6 +187,14 @@ def run_tests_api(env):
     assert_span(env, compile("(x)(?i:a*)$").search("xAAAA", 0, 3), (0, 3), "case-insensitive greedy loop stops at endpos")
     assert_span(env, compile("(x)(?i:a*)$").match("xAAAA", 0, 3), (0, 3), "case-insensitive greedy loop stops at endpos (match)")
 
+    # pos and endpos are clamped to the string, like Python.
+    m_clamped = compile("(a)").search("xa", -5, 10)
+    assert_span(env, m_clamped, (1, 2), "search clamps pos and endpos")
+    assert_eq(env, (m_clamped.pos, m_clamped.endpos) if m_clamped else None, (0, 2), "match reports the clamped pos and endpos")
+    assert_span(env, compile("(a)").fullmatch("a", 0, 5), (0, 1), "fullmatch clamps endpos")
+    assert_span(env, compile("").match("abc", 5), (3, 3), "match clamps pos")
+    assert_span(env, compile("a").search("xa", 0, -1), None, "search clamps a negative endpos")
+
     # 15. groupdict()
     m_dict = search(r"(?P<first>a)(?P<second>b)", "ab")
     assert_eq(env, m_dict.groupdict(), {"first": "a", "second": "b"}, "groupdict returns correct dict")
