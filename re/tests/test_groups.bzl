@@ -3,7 +3,8 @@ Tests for regex groups and backreferences.
 """
 
 load("@rules_testing//lib:unit_test.bzl", "unit_test")
-load("//re/tests:utils.bzl", "run_suite")
+load("//re:re.bzl", "fullmatch", "match", "search")
+load("//re/tests:utils.bzl", "assert_eq", "run_suite")
 
 def _test_groups(env):
     run_tests_groups(env)
@@ -32,6 +33,12 @@ def run_tests_groups(env):
         # Unmatched Optional Groups
         ("(a)?(b)", "b", {0: "b", 1: None, 2: "b"}),
         ("((a)|(b))", "b", {0: "b", 1: "b", 2: None, 3: "b"}),
+
+        # Empty groups at the end of the pattern are set, at the end of the match.
+        ("x()", "x", {0: "x", 1: ""}),
+        ("x($)", "ax", {0: "x", 1: ""}),
+        ("($)", "a", {0: "", 1: ""}),
+        ("x(()$)", "ax", {0: "x", 1: "", 2: ""}),
 
         # Nested Named Groups
         ("(?P<outer>a(?P<inner>b)c)", "abc", {0: "abc", "outer": "abc", "inner": "b"}),
@@ -67,3 +74,14 @@ def run_tests_groups(env):
         ),
     ]
     run_suite(env, "Group Tests", cases)
+
+    _run_empty_trailing_group_tests(env)
+
+def _run_empty_trailing_group_tests(env):
+    """Checks empty groups at the end of a pattern with search(), match() and fullmatch()."""
+    for pattern in ["x()", "x($)", "^x()"]:
+        for name, f in [("search", search), ("match", match), ("fullmatch", fullmatch)]:
+            m = f(pattern, "x")
+            assert_eq(env, (m.span(1), m.lastindex) if m else None, ((1, 1), 1), "%s(%r, \"x\") group 1" % (name, pattern))
+    m = search("x(()$)", "ax")
+    assert_eq(env, m.lastindex if m else None, 1, "lastindex of x(()$)")

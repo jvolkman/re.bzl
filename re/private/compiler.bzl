@@ -1510,10 +1510,13 @@ def optimize_matcher(instructions):
     # Check for end anchor or save 1/match
     is_anchored_end = False
 
-    # Skip trailing saves if searching for end
+    # Skip trailing saves if searching for end. The fast paths only fill in group 0,
+    # so a capture group here (an empty one, as in `x()` or `x($)`) rules them out.
     temp_idx = idx
     for _ in range(len(instructions)):
         if temp_idx < len(instructions) and instructions[temp_idx][0] == OP_SAVE:
+            if instructions[temp_idx][2] != 1:  # arg1 = slot
+                return None
             temp_idx += 1
         else:
             break
@@ -1525,6 +1528,8 @@ def optimize_matcher(instructions):
     # Check if we reached the matching end: SAVE 1, MATCH
     for _ in range(len(instructions)):
         if temp_idx < len(instructions) and instructions[temp_idx][0] == OP_SAVE:
+            if instructions[temp_idx][2] != 1:  # arg1 = slot
+                return None
             temp_idx += 1
         else:
             break
