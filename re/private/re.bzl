@@ -63,9 +63,19 @@ def compile(pattern, flags = 0):
         return search_bytecode(bytecode, text, named_groups, group_count, start_index = pos, end_index = endpos, has_case_insensitive = has_case_insensitive, opt = opt, first_skip = first_skip)
 
     def _match(text, pos = 0, endpos = None):
+        # A lexer calls match() at every position, and most calls fail at the first
+        # character. Reject those here, before the function calls below. The result is
+        # None whatever endpos is. (At or past the end of the text the slice is empty,
+        # and "" is in first_skip: a pattern with a first_skip can't match "". A
+        # negative pos is left to the clamping below.)
+        if first_skip != None and pos >= 0 and text[pos:pos + 1] in first_skip:
+            return None
         return match_bytecode(bytecode, text, named_groups, group_count, start_index = pos, end_index = endpos, has_case_insensitive = has_case_insensitive, opt = opt, first_skip = first_skip)
 
     def _fullmatch(text, pos = 0, endpos = None):
+        # The same early reject as in _match.
+        if first_skip != None and pos >= 0 and text[pos:pos + 1] in first_skip:
+            return None
         return fullmatch_bytecode(bytecode, text, named_groups, group_count, start_index = pos, end_index = endpos, has_case_insensitive = has_case_insensitive, opt = opt, first_skip = first_skip)
 
     return struct(
@@ -113,7 +123,12 @@ def match(pattern, text, flags = 0, pos = 0, endpos = None):
       See `compile` for details on MatchObject.
     """
     compiled = compile(pattern, flags = flags)
-    return match_bytecode(compiled.bytecode, text, compiled.named_groups, compiled.group_count, start_index = pos, end_index = endpos, has_case_insensitive = compiled.has_case_insensitive, opt = compiled.opt, first_skip = compiled.first_skip)
+    first_skip = compiled.first_skip
+
+    # The same early reject as in compile()'s match().
+    if first_skip != None and pos >= 0 and text[pos:pos + 1] in first_skip:
+        return None
+    return match_bytecode(compiled.bytecode, text, compiled.named_groups, compiled.group_count, start_index = pos, end_index = endpos, has_case_insensitive = compiled.has_case_insensitive, opt = compiled.opt, first_skip = first_skip)
 
 def fullmatch(pattern, text, flags = 0, pos = 0, endpos = None):
     """Try to apply the pattern to the entire string.
@@ -130,7 +145,12 @@ def fullmatch(pattern, text, flags = 0, pos = 0, endpos = None):
       See `compile` for details on MatchObject.
     """
     compiled = compile(pattern, flags = flags)
-    return fullmatch_bytecode(compiled.bytecode, text, compiled.named_groups, compiled.group_count, start_index = pos, end_index = endpos, has_case_insensitive = compiled.has_case_insensitive, opt = compiled.opt, first_skip = compiled.first_skip)
+    first_skip = compiled.first_skip
+
+    # The same early reject as in compile()'s match().
+    if first_skip != None and pos >= 0 and text[pos:pos + 1] in first_skip:
+        return None
+    return fullmatch_bytecode(compiled.bytecode, text, compiled.named_groups, compiled.group_count, start_index = pos, end_index = endpos, has_case_insensitive = compiled.has_case_insensitive, opt = compiled.opt, first_skip = first_skip)
 
 # buildifier: disable=list-append
 def _find_all_regs(compiled, text, limit = 0):
