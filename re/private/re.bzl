@@ -275,9 +275,18 @@ def sub(pattern, repl, text, count = 0, flags = 0):
     Empty matches are replaced too. As in Python 3.7+, a non-empty match may start
     where the previous empty match ended.
 
+    A replacement string is a template, with Python's rules. `\\1` … `\\99` and
+    `\\g<1>` insert a group by number, `\\g<name>` by name, and `\\g<0>` the whole
+    match; a group that didn't take part in the match inserts "". `\\n`, `\\t`,
+    `\\\\` and the other standard escapes, and octal escapes (`\\0`, `\\012`,
+    `\\101`), stand for single characters. Other escapes of ASCII letters (`\\d`),
+    references to groups that don't exist, and a trailing backslash are errors.
+    Use a raw string (`r"\\1"`) so Starlark passes the backslashes through.
+
     Args:
       pattern: The regex pattern string or a compiled regex object.
-      repl: The replacement string or function.
+      repl: The replacement string, or a function that takes a MatchObject and
+        returns the replacement.
       text: The text to search.
       count: The maximum number of pattern occurrences to replace.
         If non-positive, all occurrences are replaced.
@@ -295,7 +304,7 @@ def sub(pattern, repl, text, count = 0, flags = 0):
     # Pre-parse replacement string if it's a string; otherwise it is a function.
     repl_template = None
     if type(repl) == _STRING_TYPE:
-        repl_template = parse_replacement_template(repl, compiled.named_groups)
+        repl_template = parse_replacement_template(repl, compiled.named_groups, group_count)
 
     res_parts = []
     last_idx = 0

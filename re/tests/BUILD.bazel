@@ -8,6 +8,7 @@ load("//re/tests:test_groups.bzl", "groups_test")
 load("//re/tests:test_optimization.bzl", "optimization_test")
 load("//re/tests:test_quantifiers.bzl", "quantifiers_test")
 load("//re/tests:test_root_import.bzl", "root_import_test")
+load("//re/tests:test_sub_errors.bzl", "sub_template_errors_test")
 load("//re/tests:test_ungreedy_opt.bzl", "ungreedy_opt_test")
 load("//re/tests:test_unicode.bzl", "unicode_test")
 load("//re/tests:test_verbose.bzl", "verbose_test")
@@ -34,6 +35,8 @@ escape_test(name = "escape_test")
 groups_test(name = "groups_test")
 
 quantifiers_test(name = "quantifiers_test")
+
+sub_template_errors_test(name = "sub_template_errors_test")
 
 optimization_test(name = "optimization_test")
 
