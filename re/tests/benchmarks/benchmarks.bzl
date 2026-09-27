@@ -66,6 +66,7 @@ def _benchmark_very_large_input(n):
 
 _FILLER = "x" * 20000
 _NUMBERS_TEXT = "abc 123 " * 250  # 2000 chars, 250 numbers
+_NUMBERS_TEXT_LARGE = _NUMBERS_TEXT * 50  # 100000 chars, 12500 numbers
 _WORDS_TEXT = "lorem ipsum dolor sit amet, " * 50  # 1400 chars, 250 words
 _CSV_TEXT = ", ".join(["field%d" % i for i in range(1000)])
 _TOML_DOC = (
@@ -106,6 +107,13 @@ def benchmark_findall_numbers(n):
     p = compile(r"\d+")
     for _ in range(n):
         findall(p, _NUMBERS_TEXT)
+
+def benchmark_findall_numbers_large(n):
+    # The same density of matches as findall_numbers, over a 50x larger input.
+    # The cost per match should not grow with the size of the input.
+    p = compile(r"\d+")
+    for _ in range(n):
+        findall(p, _NUMBERS_TEXT_LARGE)
 
 def benchmark_findall_words(n):
     p = compile(r"\b\w+\b")
@@ -185,6 +193,8 @@ def run_benchmarks(n = 0):
     benchmark_search_no_match(n // 10)
     print("Running findall_numbers...")
     benchmark_findall_numbers(n // 200)
+    print("Running findall_numbers_large...")
+    benchmark_findall_numbers_large(n // 1000)
     print("Running findall_words...")
     benchmark_findall_words(n // 200)
     print("Running finditer_numbers...")
