@@ -175,7 +175,10 @@ def _new_set_builder(case_insensitive = False):
                 seen_str[c] = True
                 if len(all_chars_val) < ALL_CHARS_STR_LIMIT:
                     all_chars_val += [c]
-        all_chars_str = "".join(all_chars_val)
+
+        # The VM passes all_chars to lstrip()/rstrip(), which sort their argument on
+        # every call; that is cheapest when it is already sorted.
+        all_chars_str = "".join(sorted(all_chars_val))
 
         # Check if set is simple (fully represented by all_chars)
         is_simple = (len(state["ranges"]) == 0 and
@@ -248,7 +251,7 @@ def _parse_escape(pattern, i, pattern_len):
 
         if i + 2 < pattern_len:
             hex_str = pattern[i + 1:i + 3]
-            if not hex_str.lstrip("0123456789abcdefABCDEF"):
+            if not hex_str.lstrip("0123456789ABCDEFabcdef"):
                 return _CHR_LOOKUP[int(hex_str, 16)], i + 2
         return "x", i
 
@@ -256,7 +259,7 @@ def _parse_escape(pattern, i, pattern_len):
         # \uXXXX
         if i + 4 < pattern_len:
             hex_str = pattern[i + 1:i + 5]
-            if not hex_str.lstrip("0123456789abcdefABCDEF"):
+            if not hex_str.lstrip("0123456789ABCDEFabcdef"):
                 val = int(hex_str, 16)
                 return _chr(val), i + 4
         return "u", i
@@ -265,7 +268,7 @@ def _parse_escape(pattern, i, pattern_len):
         # \UXXXXXXXX
         if i + 8 < pattern_len:
             hex_str = pattern[i + 1:i + 9]
-            if not hex_str.lstrip("0123456789abcdefABCDEF"):
+            if not hex_str.lstrip("0123456789ABCDEFabcdef"):
                 val = int(hex_str, 16)
                 return _chr(val), i + 8
         return "U", i
