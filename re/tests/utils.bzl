@@ -66,7 +66,7 @@ def run_suite(env, name, cases, flags = 0):
             if res != None:
                 env.fail("Suite '%s' - Pattern: '%s', Text: '%s' expected None, got match '%s'" % (name, pattern, text, res.group(0)))
         elif res == None:
-            env.fail("Suite '%s' - Pattern: '%s', Text: '%s' expected match, got None" % (name, pattern, text, res.group(0)))
+            env.fail("Suite '%s' - Pattern: '%s', Text: '%s' expected match, got None" % (name, pattern, text))
         else:
             for k, v in expected.items():
                 val = res.group(k)
