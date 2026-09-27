@@ -1156,6 +1156,8 @@ def search_bytecode(bytecode, text, named_groups, group_count, start_index = 0, 
         pattern = None,
         has_case_insensitive = has_case_insensitive,
         opt = opt,
+        first_skip = first_skip,
+        visit_limit = visit_limit,
     )
     return MatchObject(text, regs, compiled, start_index, end_index)
 
@@ -1200,6 +1202,8 @@ def match_bytecode(bytecode, text, named_groups, group_count, start_index = 0, e
         pattern = None,
         has_case_insensitive = has_case_insensitive,
         opt = opt,
+        first_skip = first_skip,
+        visit_limit = visit_limit,
     )
     return MatchObject(text, regs, compiled, start_index, end_index)
 
@@ -1244,5 +1248,7 @@ def fullmatch_bytecode(bytecode, text, named_groups, group_count, start_index = 
         pattern = None,
         has_case_insensitive = has_case_insensitive,
         opt = opt,
+        first_skip = first_skip,
+        visit_limit = visit_limit,
     )
     return MatchObject(text, regs, compiled, start_index, end_index)

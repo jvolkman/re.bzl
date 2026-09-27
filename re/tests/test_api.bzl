@@ -296,3 +296,12 @@ def run_tests_api(env):
     assert_eq(env, finditer("x", "abc"), [], "finditer without matches")
     assert_eq(env, [m.group() for m in finditer("a", "aAb", flags = IGNORECASE)], ["a", "A"], "finditer with flags")
     assert_eq(env, [m.group() for m in finditer(compile("(?i)a"), "aAb")], ["a", "A"], "finditer with a compiled pattern")
+
+    # 20. A MatchObject's re can be passed back in as a pattern
+    for r in [search("(a)", "xa").re, match("(a)", "a").re, fullmatch("(a)", "a").re]:
+        assert_eq(env, search(r, "ya").span(1), (1, 2), "search with m.re")
+        assert_eq(env, match(r, "ab").span(1), (0, 1), "match with m.re")
+        assert_eq(env, fullmatch(r, "a").span(1), (0, 1), "fullmatch with m.re")
+        assert_eq(env, findall(r, "aba"), ["a", "a"], "findall with m.re")
+    r = search("(?:(?:(?:b*|aa)*)*)*.", "baax").re
+    assert_eq(env, match(r, "baax").span(), (0, 2), "m.re keeps the visit limit")
