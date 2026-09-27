@@ -157,6 +157,15 @@ That said, it _does_ work, and by optimizing for performance within the constrai
 
 Like RE2, `re.bzl` does not support backreferences and lookarounds.
 
+### Differences from Python's `re`
+
+The API (`search`, `findall`, `sub`, MatchObject, …) follows Python's `re` module, and `sub()` replacement templates use Python's syntax. The pattern syntax follows RE2, which differs from Python in a few places:
+
+- **`$` matches only at the very end of the text** (like `\z`), not before a trailing newline. In Python, `re.search("a$", "a\n")` matches; in `re.bzl` it doesn't. Instead:
+  - To match at the end of any line, use multi-line mode: `(?m)a$`, or `a(?m:$)` for just that anchor.
+  - To allow a trailing newline, include it in the match: `a\n?$`, or strip it first: `search("a$", text.rstrip("\n"))`.
+- **`\B` matches in an empty string**, as in Python 3.14 and later (older versions of Python don't match there).
+
 ### Unicode Support
 
 Starlark strings are sequences of **environment-dependent** elements (UTF-K).
