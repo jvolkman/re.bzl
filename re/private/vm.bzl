@@ -156,12 +156,13 @@ def _get_epsilon_closure(instructions, input_str, input_len, start_pc, start_reg
                 pc1 = inst[2]  # arg1
                 pc2 = inst[3]  # arg2
 
-                if inst[1] != None and visited[pc1 if pc1 < pc2 else pc2] >= visited_gen:
-                    # The back edge of a loop whose body can match empty (see
-                    # _loop_back_mark), and its loop branch (the smaller target) was
-                    # already reached at this position: the iteration that just ended
-                    # matched nothing, or a thread with higher priority already started
-                    # an iteration here. Either way, don't start another one; exit.
+                if inst[1] != None and visited[inst[1]] >= visited_gen:
+                    # A marked SPLIT (see _loop_back_mark): the back edge of a loop whose
+                    # body can match empty, or an optional copy of such a body in
+                    # `{n,m}`. The pc it checks (the loop's entry, or the previous copy's
+                    # SPLIT) was already reached at this position: the iteration that
+                    # just ended matched nothing, or a thread with higher priority already
+                    # started an iteration here. Either way, don't start another one; exit.
                     pc = pc2 if pc1 < pc2 else pc1
                 else:
                     # Push lower priority (pc2) first so we follow pc1 (higher priority) immediately

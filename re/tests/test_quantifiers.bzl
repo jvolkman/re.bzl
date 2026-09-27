@@ -75,6 +75,7 @@ def run_tests_quantifiers(env):
     _run_empty_iteration_tests(env)
     _run_lazy_loop_reentry_tests(env)
     _run_nested_empty_loop_tests(env)
+    _run_bounded_empty_iteration_tests(env)
 
 def _run_empty_iteration_tests(env):
     """Checks that a loop stops after an iteration that matched nothing, as CPython does."""
@@ -146,6 +147,25 @@ def _run_nested_empty_loop_tests(env):
         ("(?:(?:(?:|.)*)*)*a", "match", "baa", [(0, 2)]),
         ("(?:(?:(?:b*|aa)*)*)*.", "match", "baax", [(0, 2)]),
         ("(?:(?:(?:|.)*)*)*a", "search", "xbaa", [(0, 3)]),
+    ]
+    _check_spans(env, cases)
+
+def _run_bounded_empty_iteration_tests(env):
+    """Checks {n,m} of a body that can match empty."""
+    cases = [
+        # 13. Like `*`, `{n,m}` starts no optional iteration after one that matched
+        # nothing. Mandatory iterations may be empty.
+        ("(|a){1,4}$", "search", "a", [(0, 1), (1, 1)]),
+        ("(a??){2,4}b", "match", "ab", [(0, 2), (1, 1)]),
+        ("(\\D??){1,3}\\B", "search", "aaaa", [(0, 1), (1, 1)]),
+        ("(?i)(\\D??){1,3}\\B", "search", "AAAAAxaaab", [(0, 1), (1, 1)]),
+        ("(a*?){0,2}?(b)", "match", "aab", [(0, 3), (1, 2), (2, 3)]),
+        ("(\\D??){2,5}(b)", "fullmatch", "bab", [(0, 3), (2, 2), (2, 3)]),
+        ("(a*|b){0,3}\\b", "fullmatch", "ab", [(0, 2), (2, 2)]),
+        # Bodies that can't match empty, and mandatory empty iterations, are unaffected.
+        ("(a|b){1,3}", "match", "abab", [(0, 3), (2, 3)]),
+        ("(a|){2,2}b", "match", "b", [(0, 1), (0, 0)]),
+        ("(|a){2,3}", "fullmatch", "a", [(0, 1), (0, 1)]),
     ]
     _check_spans(env, cases)
 

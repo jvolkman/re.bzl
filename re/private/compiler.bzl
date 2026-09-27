@@ -604,8 +604,9 @@ def _remap_inst(inst, old_to_new):
         pc2 = inst[3]  # arg2
         new_pc1 = old_to_new.get(pc1, pc1)
         new_pc2 = old_to_new.get(pc2, pc2)
-        if new_pc1 != pc1 or new_pc2 != pc2:
-            return (itype, val, new_pc1, new_pc2)
+        new_val = old_to_new.get(val, val) if val != None else None  # val = mark pc
+        if new_pc1 != pc1 or new_pc2 != pc2 or new_val != val:
+            return (itype, new_val, new_pc1, new_pc2)
         return inst
 
     if itype == OP_GREEDY_LOOP or itype == OP_UNGREEDY_LOOP:
@@ -631,7 +632,10 @@ def _shift_inst(inst, old_start, delta):
             pc1 += delta
         if pc2 != None and pc2 >= old_start:
             pc2 += delta
-        return (OP_SPLIT, inst[1], pc1, pc2)
+        mark = inst[1]  # val: the pc a marked SPLIT checks (see _loop_back_mark)
+        if mark != None and mark >= old_start:
+            mark += delta
+        return (OP_SPLIT, mark, pc1, pc2)
     elif itype == OP_GREEDY_LOOP or itype == OP_UNGREEDY_LOOP:
         exit_pc = inst[2]  # arg1
         if exit_pc != None and exit_pc >= old_start:
@@ -675,8 +679,8 @@ def _optimize_greedy_loops(instructions):
     in_nullable_loop = {}
     for j in range(num_insts):
         inst = instructions[j]
-        if inst[0] == OP_SPLIT and inst[1] != None:
-            for k in range(inst[2] if inst[2] < inst[3] else inst[3], j):
+        if inst[0] == OP_SPLIT and inst[1] != None and inst[1] < j and (inst[2] == inst[1] or inst[3] == inst[1]):
+            for k in range(inst[1], j):
                 in_nullable_loop[k] = True
 
     for i in range(num_insts):
@@ -925,20 +929,26 @@ def _can_match_empty(insts, start, end):
     return False
 
 def _loop_back_mark(insts, atom_start):
-    """Returns the val for the SPLIT that loops back over insts[atom_start:].
+    """Returns whether the SPLIT that loops back over insts[atom_start:] is marked.
 
     CPython doesn't start another iteration of a loop after one that matched
     nothing: `(?:a*|.)*` matches "a" in "ab", not "ab". Only a body that can
-    match empty can do that, so only those loops are marked (val True, else None).
+    match empty can do that, so only those loops are marked.
 
-    At a marked SPLIT, the smaller target is the loop branch and the larger one
-    the exit. If the VM already reached the loop branch at the current position,
-    an iteration started here, so the VM takes the exit only.
+    A marked SPLIT's val is a pc to check, and its larger target is the exit. If
+    the VM already reached that pc at the current position, the thread takes the
+    exit only. A loop's back edge checks the loop's entry SPLIT (its smaller
+    target): if that was reached here, an iteration started here. The optional
+    copies of `{n,m}` do the same (see _handle_quantifier).
     """
-    return True if _can_match_empty(insts, atom_start, len(insts)) else None
+    return _can_match_empty(insts, atom_start, len(insts))
 
-def _apply_question_mark(insts, atom_start, lazy = False):
-    """Applies ? logic. Lazy=True tries skipping first."""
+def _apply_question_mark(insts, atom_start, lazy = False, mark = None):
+    """Applies ? logic. Lazy=True tries skipping first.
+
+    mark: For an optional copy of `{n,m}`, the pc of the previous optional copy's
+    SPLIT, if the body can match empty (see _loop_back_mark).
+    """
 
     # Shift the atom down by one to make room for a SPLIT in front of it.
     skip_target = len(insts) + 1
@@ -947,14 +957,14 @@ def _apply_question_mark(insts, atom_start, lazy = False):
 
     atom_pc = atom_start + 1
     if lazy:
-        insts.insert(atom_start, (OP_SPLIT, None, skip_target, atom_pc))
+        insts.insert(atom_start, (OP_SPLIT, mark, skip_target, atom_pc))
     else:
-        insts.insert(atom_start, (OP_SPLIT, None, atom_pc, skip_target))
+        insts.insert(atom_start, (OP_SPLIT, mark, atom_pc, skip_target))
 
 # buildifier: disable=list-append
 def _apply_star(insts, atom_start, lazy = False):
     """Applies * logic. Lazy=True tries skipping first."""
-    mark = _loop_back_mark(insts, atom_start)
+    mark = atom_start if _loop_back_mark(insts, atom_start) else None
 
     # Shift the atom down by one to make room for a SPLIT in front of it.
     end_split_pc = len(insts) + 1
@@ -1052,6 +1062,7 @@ def _handle_quantifier(pattern, i, insts, atom_start = -1, ungreedy = False):
                     is_lazy = not is_lazy
 
                 template = insts[atom_start:]
+                nullable = _can_match_empty(insts, atom_start, len(insts))
                 for _ in range(len(template)):
                     insts.pop()
 
@@ -1066,10 +1077,19 @@ def _handle_quantifier(pattern, i, insts, atom_start = -1, ungreedy = False):
                     _apply_star(insts, block_start, lazy = is_lazy)
 
                 elif max_rep > min_rep:
+                    # CPython stops a repeat after an optional iteration that matched
+                    # nothing. Each optional copy after the first is marked with the
+                    # previous copy's SPLIT: if a thread reaches it at the position
+                    # where it reached that SPLIT, the previous copy was empty (or
+                    # skipped), so it skips this one too. `(|a){1,4}$` on "a" sets group 1
+                    # to (1, 1), like CPython: "" then "a" then "", and no fourth iteration
+                    # after the empty third; not "" "" "" then "a" = (0, 1).
+                    prev_split = None
                     for _ in range(max_rep - min_rep):
                         block_start = len(insts)
                         insts += _shift_template(template, atom_start, block_start - atom_start)
-                        _apply_question_mark(insts, block_start, lazy = is_lazy)
+                        _apply_question_mark(insts, block_start, lazy = is_lazy, mark = prev_split if nullable else None)
+                        prev_split = block_start
 
                 return final_i
 
@@ -1725,13 +1745,12 @@ def compute_visit_limit(instructions):
     Returns:
       2, or one more than the deepest nesting of loops whose body can match empty.
     """
-    marked = [j for j, inst in enumerate(instructions) if inst[0] == OP_SPLIT and inst[1] != None]
+    marked = [j for j, inst in enumerate(instructions) if inst[0] == OP_SPLIT and inst[1] != None and inst[1] < j and (inst[2] == inst[1] or inst[3] == inst[1])]
     if len(marked) < 2:
         return 2
     depth = [0] * len(instructions)
     for j in marked:
-        inst = instructions[j]
-        for k in range(inst[2] if inst[2] < inst[3] else inst[3], j + 1):
+        for k in range(instructions[j][1], j + 1):
             depth[k] += 1
     deepest = max(depth)
     return deepest + 1 if deepest > 1 else 2
