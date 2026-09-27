@@ -111,7 +111,7 @@ def _char_in_set(set_struct, c):
 
 # buildifier: disable=list-append
 # buildifier: disable=function-docstring-args
-def _get_epsilon_closure(instructions, input_str, input_len, start_pc, start_regs, current_idx, visited, visited_gen, loop_cache, input_lower = None, word_mask = None):
+def _get_epsilon_closure(instructions, input_str, input_len, start_pc, start_regs, current_idx, visited, visited_gen, visited_last, loop_cache, input_lower = None, word_mask = None):
     reachable = []
     num_inst = len(instructions)
 
@@ -120,10 +120,10 @@ def _get_epsilon_closure(instructions, input_str, input_len, start_pc, start_reg
 
     # Outer loop handles exploration from stack.
     # Inner loop follows single-thread transitions.
-    limit = num_inst * 2 + 100
-
-    # We use a large enough number for the inner loop to cover any possible epsilon chain (max instructions).
-    inner_limit = num_inst + 10
+    # Each pc is reached at most (visited_last - visited_gen + 1) times at this
+    # position (see compute_visit_limit), which bounds both the number of threads
+    # and the length of any epsilon chain.
+    limit = num_inst * (visited_last - visited_gen + 1) + 100
 
     for _ in range(limit):
         if not stack:
@@ -131,11 +131,11 @@ def _get_epsilon_closure(instructions, input_str, input_len, start_pc, start_reg
         pc, regs = stack.pop()
 
         # Inner loop to follow a thread's epsilon transitions.
-        for _ in range(inner_limit):
+        for _ in range(limit):
             if visited[pc] < visited_gen:
                 visited[pc] = visited_gen
-            elif visited[pc] == visited_gen:
-                visited[pc] = visited_gen + 1
+            elif visited[pc] < visited_last:
+                visited[pc] += 1
             else:
                 # PC already fully explored in this generation; drop this thread.
                 # (`continue` here would spin on the same pc for inner_limit iterations.)
@@ -248,7 +248,7 @@ def _get_epsilon_closure(instructions, input_str, input_len, start_pc, start_reg
                     stack += [(pc, regs)]  # Push to stack for second visit (low priority)
                     pc = inst[2]  # arg1 = exit_pc
                 else:
-                    # Second visit (visited[pc] == visited_gen + 1):
+                    # Second visit (visited[pc] > visited_gen; any later one only repeats it):
                     # Consuming path (low priority)
                     # Use cache to check if we can consume
                     chars = inst[1]  # val
@@ -393,7 +393,7 @@ def _process_batch(instructions, batch, input_str, current_idx, input_len, input
     return next_threads_list, best_match_regs, matched_priority_index
 
 # buildifier: disable=list-append
-def execute(instructions, input_str, num_regs, start_index = 0, end_index = None, initial_regs = None, anchored = False, has_case_insensitive = False, input_lower = None, word_mask = None, require_end = False, first_skip = None, must_advance = False):
+def execute(instructions, input_str, num_regs, start_index = 0, end_index = None, initial_regs = None, anchored = False, has_case_insensitive = False, input_lower = None, word_mask = None, require_end = False, first_skip = None, must_advance = False, visit_limit = 2):
     """Executes the bytecode on the input string.
 
     Args:
@@ -412,6 +412,8 @@ def execute(instructions, input_str, num_regs, start_index = 0, end_index = None
       must_advance: If True, an empty match at start_index does not count, but a
         non-empty match starting there does (Python 3.7+ findall/sub/split after
         an empty match).
+      visit_limit: How many times the VM may reach a pc at one position (see
+        compute_visit_limit).
 
     Returns:
       A list of registers (start/end indices) or None.
@@ -459,7 +461,8 @@ def execute(instructions, input_str, num_regs, start_index = 0, end_index = None
             char_idx += skip
 
         # Expand epsilon closure for current threads
-        visited_gen += 3
+        visited_gen += visit_limit + 1
+        visited_last = visited_gen + visit_limit - 1
         expanded_batch = []
 
         for s_pc, s_regs, s_skip in current_threads:
@@ -468,15 +471,15 @@ def execute(instructions, input_str, num_regs, start_index = 0, end_index = None
                 expanded_batch += [(s_pc, s_regs, s_skip)]
                 continue
 
-            closure = _get_epsilon_closure(instructions, input_str, input_len, s_pc, s_regs, char_idx, visited, visited_gen, loop_cache, input_lower = input_lower, word_mask = word_mask)
+            closure = _get_epsilon_closure(instructions, input_str, input_len, s_pc, s_regs, char_idx, visited, visited_gen, visited_last, loop_cache, input_lower = input_lower, word_mask = word_mask)
             for c_pc, c_regs in closure:
                 expanded_batch += [(c_pc, c_regs, char_idx)]
 
         # Leftmost-first semantics: once a match has been found, a thread seeded at a
         # later start position can never win, so stop seeding new start positions.
         if not anchored and best_match_regs == None:
-            if visited[0] < visited_gen + 2:
-                closure0 = _get_epsilon_closure(instructions, input_str, input_len, 0, initial_regs[:], char_idx, visited, visited_gen, loop_cache, input_lower = input_lower, word_mask = word_mask)
+            if visited[0] <= visited_last:
+                closure0 = _get_epsilon_closure(instructions, input_str, input_len, 0, initial_regs[:], char_idx, visited, visited_gen, visited_last, loop_cache, input_lower = input_lower, word_mask = word_mask)
                 for c_pc, c_regs in closure0:
                     expanded_batch += [(c_pc, c_regs, char_idx)]
 
@@ -626,7 +629,7 @@ def expand_replacement(repl, match_str, groups, named_groups = {}):
     template = parse_replacement_template(repl, named_groups)
     return expand_template(template, match_str, groups)
 
-def search_regs(bytecode, text, group_count, start_index = 0, end_index = None, has_case_insensitive = False, opt = None, input_lower = None, word_mask = None, first_skip = None, must_advance = False):
+def search_regs(bytecode, text, group_count, start_index = 0, end_index = None, has_case_insensitive = False, opt = None, input_lower = None, word_mask = None, first_skip = None, must_advance = False, visit_limit = 2):
     """Executes a search returning registers.
 
     The returned `regs` is a flat list of integers representing [start, end] pairs for each group.
@@ -649,6 +652,8 @@ def search_regs(bytecode, text, group_count, start_index = 0, end_index = None, 
       first_skip: Characters that can never begin a match (see compute_first_skip).
       must_advance: If True, reject an empty match at start_index (the previous
         findall/sub/split match was empty and ended there).
+      visit_limit: How many times the VM may reach a pc at one position (see
+        compute_visit_limit).
 
     Returns:
       List of registers (start/end indices) or None.
@@ -663,7 +668,7 @@ def search_regs(bytecode, text, group_count, start_index = 0, end_index = None, 
         # only a non-empty match at index 0 remains; avoid scanning the whole input.
         if start_index > 0:
             return None
-        return execute(bytecode, text, (group_count + 1) * 2, end_index = end_index, anchored = True, has_case_insensitive = has_case_insensitive, input_lower = input_lower, word_mask = word_mask, must_advance = True)
+        return execute(bytecode, text, (group_count + 1) * 2, end_index = end_index, anchored = True, has_case_insensitive = has_case_insensitive, input_lower = input_lower, word_mask = word_mask, must_advance = True, visit_limit = visit_limit)
 
     # Fast path optimization. The fast paths below do not implement must_advance. It
     # is only set after an empty match, which the patterns they handle can produce
@@ -676,7 +681,7 @@ def search_regs(bytecode, text, group_count, start_index = 0, end_index = None, 
                 return None
 
             # If anchored at start, search is just match
-            return match_regs(bytecode, text, group_count, start_index = start_index, end_index = end_index, has_case_insensitive = has_case_insensitive, opt = opt, input_lower = input_lower, word_mask = word_mask)
+            return match_regs(bytecode, text, group_count, start_index = start_index, end_index = end_index, has_case_insensitive = has_case_insensitive, opt = opt, input_lower = input_lower, word_mask = word_mask, visit_limit = visit_limit)
 
         # Only `...prefix [set]* suffix$` and `...prefix [set]+ suffix$` are handled here.
         prefix_set_is_plus = opt.prefix_set_chars != None and opt.prefix_set_chars == opt.greedy_set_chars
@@ -728,7 +733,7 @@ def search_regs(bytecode, text, group_count, start_index = 0, end_index = None, 
                     break
 
                 # For unanchored search with prefix literal, simple skip:
-                regs = match_regs(bytecode, text, group_count, start_index = found_idx, end_index = end_index, has_case_insensitive = has_case_insensitive, opt = opt, input_lower = input_lower, word_mask = word_mask)
+                regs = match_regs(bytecode, text, group_count, start_index = found_idx, end_index = end_index, has_case_insensitive = has_case_insensitive, opt = opt, input_lower = input_lower, word_mask = word_mask, visit_limit = visit_limit)
                 if regs:
                     return regs
 
@@ -792,7 +797,7 @@ def search_regs(bytecode, text, group_count, start_index = 0, end_index = None, 
                     regs[1] = found_idx + len(opt.suffix)
                     return regs
 
-                regs = match_regs(bytecode, text, group_count, start_index = search_start, end_index = end_index, has_case_insensitive = has_case_insensitive, opt = opt, input_lower = input_lower, word_mask = word_mask)
+                regs = match_regs(bytecode, text, group_count, start_index = search_start, end_index = end_index, has_case_insensitive = has_case_insensitive, opt = opt, input_lower = input_lower, word_mask = word_mask, visit_limit = visit_limit)
                 if regs:
                     return regs
 
@@ -804,9 +809,9 @@ def search_regs(bytecode, text, group_count, start_index = 0, end_index = None, 
             return None
 
     num_regs = (group_count + 1) * 2
-    return execute(bytecode, text, num_regs, start_index = start_index, end_index = end_index, anchored = False, has_case_insensitive = has_case_insensitive, input_lower = input_lower, word_mask = word_mask, first_skip = first_skip, must_advance = must_advance)
+    return execute(bytecode, text, num_regs, start_index = start_index, end_index = end_index, anchored = False, has_case_insensitive = has_case_insensitive, input_lower = input_lower, word_mask = word_mask, first_skip = first_skip, must_advance = must_advance, visit_limit = visit_limit)
 
-def match_regs(bytecode, text, group_count, start_index = 0, end_index = None, has_case_insensitive = False, opt = None, input_lower = None, word_mask = None, first_skip = None):
+def match_regs(bytecode, text, group_count, start_index = 0, end_index = None, has_case_insensitive = False, opt = None, input_lower = None, word_mask = None, first_skip = None, visit_limit = 2):
     """Executes a match returning registers.
 
     Args:
@@ -820,6 +825,8 @@ def match_regs(bytecode, text, group_count, start_index = 0, end_index = None, h
       input_lower: Pre-calculated lowercase input string.
       word_mask: Pre-calculated word character mask.
       first_skip: Characters that can never begin a match (see compute_first_skip).
+      visit_limit: How many times the VM may reach a pc at one position (see
+        compute_visit_limit).
 
     Returns:
       List of registers (start/end indices) or None.
@@ -917,9 +924,9 @@ def match_regs(bytecode, text, group_count, start_index = 0, end_index = None, h
                 return regs
 
     num_regs = (group_count + 1) * 2
-    return execute(bytecode, text, num_regs, start_index = start_index, end_index = end_index, anchored = True, has_case_insensitive = has_case_insensitive, input_lower = input_lower, word_mask = word_mask)
+    return execute(bytecode, text, num_regs, start_index = start_index, end_index = end_index, anchored = True, has_case_insensitive = has_case_insensitive, input_lower = input_lower, word_mask = word_mask, visit_limit = visit_limit)
 
-def fullmatch_regs(bytecode, text, group_count, start_index = 0, end_index = None, has_case_insensitive = False, opt = None, input_lower = None, word_mask = None, first_skip = None):
+def fullmatch_regs(bytecode, text, group_count, start_index = 0, end_index = None, has_case_insensitive = False, opt = None, input_lower = None, word_mask = None, first_skip = None, visit_limit = 2):
     """Executes a full match returning registers.
 
     Args:
@@ -933,6 +940,8 @@ def fullmatch_regs(bytecode, text, group_count, start_index = 0, end_index = Non
       input_lower: Pre-calculated lowercase input string.
       word_mask: Pre-calculated word character mask.
       first_skip: Characters that can never begin a match (see compute_first_skip).
+      visit_limit: How many times the VM may reach a pc at one position (see
+        compute_visit_limit).
 
     Returns:
       List of registers (start/end indices) or None.
@@ -1004,7 +1013,7 @@ def fullmatch_regs(bytecode, text, group_count, start_index = 0, end_index = Non
                 return regs
 
     num_regs = (group_count + 1) * 2
-    regs = execute(bytecode, text, num_regs, start_index = start_index, end_index = end_index, anchored = True, has_case_insensitive = has_case_insensitive, input_lower = input_lower, word_mask = word_mask, require_end = True)
+    regs = execute(bytecode, text, num_regs, start_index = start_index, end_index = end_index, anchored = True, has_case_insensitive = has_case_insensitive, input_lower = input_lower, word_mask = word_mask, require_end = True, visit_limit = visit_limit)
     if regs and regs[1] != effective_len:
         return None
     return regs
@@ -1104,7 +1113,7 @@ def MatchObject(text, regs, compiled, pos, endpos):
         lastgroup = lastgroup,
     )
 
-def search_bytecode(bytecode, text, named_groups, group_count, start_index = 0, end_index = None, has_case_insensitive = False, opt = None, input_lower = None, word_mask = None, first_skip = None):
+def search_bytecode(bytecode, text, named_groups, group_count, start_index = 0, end_index = None, has_case_insensitive = False, opt = None, input_lower = None, word_mask = None, first_skip = None, visit_limit = 2):
     """Executes a search using bytecode.
 
     Args:
@@ -1119,6 +1128,8 @@ def search_bytecode(bytecode, text, named_groups, group_count, start_index = 0, 
       input_lower: Pre-calculated lowercase input string.
       word_mask: Pre-calculated word character mask.
       first_skip: Characters that can never begin a match (see compute_first_skip).
+      visit_limit: How many times the VM may reach a pc at one position (see
+        compute_visit_limit).
 
     Returns:
       A MatchObject or None.
@@ -1134,7 +1145,7 @@ def search_bytecode(bytecode, text, named_groups, group_count, start_index = 0, 
         end_index = 0
     if start_index < 0 or start_index > n:
         start_index = 0 if start_index < 0 else n
-    regs = search_regs(bytecode, text, group_count, start_index = start_index, end_index = end_index, has_case_insensitive = has_case_insensitive, opt = opt, input_lower = input_lower, word_mask = word_mask, first_skip = first_skip)
+    regs = search_regs(bytecode, text, group_count, start_index = start_index, end_index = end_index, has_case_insensitive = has_case_insensitive, opt = opt, input_lower = input_lower, word_mask = word_mask, first_skip = first_skip, visit_limit = visit_limit)
     if not regs:
         return None
 
@@ -1148,7 +1159,7 @@ def search_bytecode(bytecode, text, named_groups, group_count, start_index = 0, 
     )
     return MatchObject(text, regs, compiled, start_index, end_index)
 
-def match_bytecode(bytecode, text, named_groups, group_count, start_index = 0, end_index = None, has_case_insensitive = False, opt = None, input_lower = None, word_mask = None, first_skip = None):
+def match_bytecode(bytecode, text, named_groups, group_count, start_index = 0, end_index = None, has_case_insensitive = False, opt = None, input_lower = None, word_mask = None, first_skip = None, visit_limit = 2):
     """Executes a match using bytecode.
 
     Args:
@@ -1163,6 +1174,8 @@ def match_bytecode(bytecode, text, named_groups, group_count, start_index = 0, e
       input_lower: Pre-calculated lowercase input string.
       word_mask: Pre-calculated word character mask.
       first_skip: Characters that can never begin a match (see compute_first_skip).
+      visit_limit: How many times the VM may reach a pc at one position (see
+        compute_visit_limit).
 
     Returns:
       A MatchObject or None.
@@ -1176,7 +1189,7 @@ def match_bytecode(bytecode, text, named_groups, group_count, start_index = 0, e
         end_index = 0
     if start_index < 0 or start_index > n:
         start_index = 0 if start_index < 0 else n
-    regs = match_regs(bytecode, text, group_count, start_index = start_index, end_index = end_index, has_case_insensitive = has_case_insensitive, opt = opt, input_lower = input_lower, word_mask = word_mask, first_skip = first_skip)
+    regs = match_regs(bytecode, text, group_count, start_index = start_index, end_index = end_index, has_case_insensitive = has_case_insensitive, opt = opt, input_lower = input_lower, word_mask = word_mask, first_skip = first_skip, visit_limit = visit_limit)
     if not regs:
         return None
 
@@ -1190,7 +1203,7 @@ def match_bytecode(bytecode, text, named_groups, group_count, start_index = 0, e
     )
     return MatchObject(text, regs, compiled, start_index, end_index)
 
-def fullmatch_bytecode(bytecode, text, named_groups, group_count, start_index = 0, end_index = None, has_case_insensitive = False, opt = None, input_lower = None, word_mask = None, first_skip = None):
+def fullmatch_bytecode(bytecode, text, named_groups, group_count, start_index = 0, end_index = None, has_case_insensitive = False, opt = None, input_lower = None, word_mask = None, first_skip = None, visit_limit = 2):
     """Executes a full match using bytecode.
 
     Args:
@@ -1205,6 +1218,8 @@ def fullmatch_bytecode(bytecode, text, named_groups, group_count, start_index = 
       input_lower: Pre-calculated lowercase input string.
       word_mask: Pre-calculated word character mask.
       first_skip: Characters that can never begin a match (see compute_first_skip).
+      visit_limit: How many times the VM may reach a pc at one position (see
+        compute_visit_limit).
 
     Returns:
       A MatchObject or None.
@@ -1218,7 +1233,7 @@ def fullmatch_bytecode(bytecode, text, named_groups, group_count, start_index = 
         end_index = 0
     if start_index < 0 or start_index > n:
         start_index = 0 if start_index < 0 else n
-    regs = fullmatch_regs(bytecode, text, group_count, start_index = start_index, end_index = end_index, has_case_insensitive = has_case_insensitive, opt = opt, input_lower = input_lower, word_mask = word_mask, first_skip = first_skip)
+    regs = fullmatch_regs(bytecode, text, group_count, start_index = start_index, end_index = end_index, has_case_insensitive = has_case_insensitive, opt = opt, input_lower = input_lower, word_mask = word_mask, first_skip = first_skip, visit_limit = visit_limit)
     if not regs:
         return None
 

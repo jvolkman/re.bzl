@@ -1688,3 +1688,34 @@ def compute_first_skip(instructions):
         return None
     skip = "".join([c for c in _CHR_LOOKUP.elems() if c not in first])
     return skip if skip else None
+
+def compute_visit_limit(instructions):
+    """Computes how many times the VM may reach one pc at one input position.
+
+    Twice is enough for most patterns (OP_UNGREEDY_LOOP exits on the first visit and
+    consumes on the second). A loop whose body can match empty (a marked back edge,
+    see _loop_back_mark) can start an iteration at the position where a thread
+    reached it. So a pc inside n such loops, one inside the other, can be reached
+    in n + 1 different states at one position: by a thread that got there by
+    consuming, and by one for each loop that started an iteration there. Each state
+    must get its visit. `(?:(?:|.)*)*a` matches "ca" in "caa" only if the inner
+    loop's back edge is reached three times at 1: after "c", after the inner loop's
+    empty second iteration, and after its empty first iteration in the outer loop's
+    second iteration.
+
+    Args:
+      instructions: The optimized bytecode.
+
+    Returns:
+      2, or one more than the deepest nesting of loops whose body can match empty.
+    """
+    marked = [j for j, inst in enumerate(instructions) if inst[0] == OP_SPLIT and inst[1] != None]
+    if len(marked) < 2:
+        return 2
+    depth = [0] * len(instructions)
+    for j in marked:
+        inst = instructions[j]
+        for k in range(inst[2] if inst[2] < inst[3] else inst[3], j + 1):
+            depth[k] += 1
+    deepest = max(depth)
+    return deepest + 1 if deepest > 1 else 2

@@ -74,6 +74,7 @@ def run_tests_quantifiers(env):
     run_suite(env, "Quantifier Tests", cases)
     _run_empty_iteration_tests(env)
     _run_lazy_loop_reentry_tests(env)
+    _run_nested_empty_loop_tests(env)
 
 def _run_empty_iteration_tests(env):
     """Checks that a loop stops after an iteration that matched nothing, as CPython does."""
@@ -133,6 +134,20 @@ def _run_lazy_loop_reentry_tests(env):
         [("", ""), ("2", ""), ("", "")],
         "findall('((\\\\w*?\\\\b)+)\\\\W*', '2')",
     )
+
+def _run_nested_empty_loop_tests(env):
+    """Checks loops inside loops, where both bodies can match empty."""
+    cases = [
+        # 12. Every level can start an iteration at the same position, and the
+        # match CPython finds may need all of them.
+        ("((|.)*)*a", "match", "baa", [(0, 2), (1, 1), (1, 1)]),
+        ("(?:(?:b*|aa)*)*.", "match", "baax", [(0, 2)]),
+        ("((?:[^a]*|aa)*)*.", "match", "xbaaxx", [(0, 3), (2, 2)]),
+        ("(?:(?:(?:|.)*)*)*a", "match", "baa", [(0, 2)]),
+        ("(?:(?:(?:b*|aa)*)*)*.", "match", "baax", [(0, 2)]),
+        ("(?:(?:(?:|.)*)*)*a", "search", "xbaa", [(0, 3)]),
+    ]
+    _check_spans(env, cases)
 
 def _check_spans(env, cases):
     for pattern, method, text, expected in cases:
