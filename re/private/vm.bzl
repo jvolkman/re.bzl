@@ -156,11 +156,20 @@ def _get_epsilon_closure(instructions, input_str, input_len, start_pc, start_reg
                 pc1 = inst[2]  # arg1
                 pc2 = inst[3]  # arg2
 
-                # Push lower priority (pc2) first so we follow pc1 (higher priority) immediately
-                # DFS order matters for priority
-                stack += [(pc2, regs)]
-                pc = pc1
-                # Continue loop to process pc1
+                if inst[1] != None and visited[pc1 if pc1 < pc2 else pc2] >= visited_gen:
+                    # The back edge of a loop whose body can match empty (see
+                    # _loop_back_mark), and its loop branch (the smaller target) was
+                    # already reached at this position: the iteration that just ended
+                    # matched nothing, or a thread with higher priority already started
+                    # an iteration here. Either way, don't start another one; exit.
+                    pc = pc2 if pc1 < pc2 else pc1
+                else:
+                    # Push lower priority (pc2) first so we follow pc1 (higher priority) immediately
+                    # DFS order matters for priority
+                    stack += [(pc2, regs)]
+                    pc = pc1
+
+                # Continue loop to process pc
 
             elif itype == OP_SAVE:
                 group_idx = inst[2]  # arg1 = slot

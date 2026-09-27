@@ -883,6 +883,45 @@ def _build_alt_tree(instructions, group_ctx):
     instructions += new_block
     group_ctx["exit_jumps"] = [j + num_splits for j in group_ctx["exit_jumps"]]
 
+# buildifier: disable=list-append
+def _can_match_empty(insts, start, end):
+    """Returns whether insts[start:end] can reach `end` without consuming input."""
+    seen = {}
+    stack = [start]
+    for _ in range(2 * (end - start) + 2):
+        if not stack:
+            break
+        pc = stack.pop()
+        if pc >= end:
+            return True
+        if pc in seen:
+            continue
+        seen[pc] = True
+        inst = insts[pc]
+        op = inst[0]
+        if op == OP_JUMP:
+            stack += [inst[2]]
+        elif op == OP_SPLIT:
+            stack += [inst[2], inst[3]]
+        elif (op == OP_SAVE or op == OP_ANCHOR_START or op == OP_ANCHOR_END or
+              op == OP_ANCHOR_LINE_START or op == OP_ANCHOR_LINE_END or
+              op == OP_WORD_BOUNDARY or op == OP_NOT_WORD_BOUNDARY):
+            stack += [pc + 1]
+    return False
+
+def _loop_back_mark(insts, atom_start):
+    """Returns the val for the SPLIT that loops back over insts[atom_start:].
+
+    CPython doesn't start another iteration of a loop after one that matched
+    nothing: `(?:a*|.)*` matches "a" in "ab", not "ab". Only a body that can
+    match empty can do that, so only those loops are marked (val True, else None).
+
+    At a marked SPLIT, the smaller target is the loop branch and the larger one
+    the exit. If the VM already reached the loop branch at the current position,
+    an iteration started here, so the VM takes the exit only.
+    """
+    return True if _can_match_empty(insts, atom_start, len(insts)) else None
+
 def _apply_question_mark(insts, atom_start, lazy = False):
     """Applies ? logic. Lazy=True tries skipping first."""
 
@@ -900,6 +939,7 @@ def _apply_question_mark(insts, atom_start, lazy = False):
 # buildifier: disable=list-append
 def _apply_star(insts, atom_start, lazy = False):
     """Applies * logic. Lazy=True tries skipping first."""
+    mark = _loop_back_mark(insts, atom_start)
 
     # Shift the atom down by one to make room for a SPLIT in front of it.
     end_split_pc = len(insts) + 1
@@ -913,14 +953,23 @@ def _apply_star(insts, atom_start, lazy = False):
     # Jump back replaced by SPLIT to allow one extra empty match for groups
     if lazy:
         insts.insert(split_pc, (OP_SPLIT, None, skip_target, atom_pc))
-        insts += [(OP_SPLIT, None, skip_target, split_pc)]
+        insts += [(OP_SPLIT, mark, skip_target, split_pc)]
     else:
         insts.insert(split_pc, (OP_SPLIT, None, atom_pc, skip_target))
-        insts += [(OP_SPLIT, None, split_pc, skip_target)]
+        insts += [(OP_SPLIT, mark, split_pc, skip_target)]
 
 # buildifier: disable=list-append
 def _apply_plus(insts, atom_start, lazy = False):
     """Applies + logic. Lazy=True tries exit first."""
+    if _can_match_empty(insts, atom_start, len(insts)):
+        # CPython always tries a second iteration after the first, required one,
+        # even if that matched nothing: `(?:()|a)+?` fullmatches "a" with group 1
+        # at (0, 0), where `(?:()|a)*?` leaves it unset. Compile x+ as x x*, the
+        # way {1,} is, so the loop stops only after an empty optional iteration.
+        block_start = len(insts)
+        insts += _shift_template(insts[atom_start:], atom_start, block_start - atom_start)
+        _apply_star(insts, block_start, lazy = lazy)
+        return
 
     # Greedy: atom -> SPLIT(atom_start, next)
     # Lazy: atom -> SPLIT(next, atom_start)

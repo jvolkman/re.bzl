@@ -3,7 +3,8 @@ Tests for regex quantifiers.
 """
 
 load("@rules_testing//lib:unit_test.bzl", "unit_test")
-load("//re/tests:utils.bzl", "run_suite")
+load("//re:re.bzl", "compile")
+load("//re/tests:utils.bzl", "assert_eq", "run_suite")
 
 def _test_quantifiers(env):
     run_tests_quantifiers(env)
@@ -71,3 +72,38 @@ def run_tests_quantifiers(env):
         ("(?:(?:)??a)+?", "xaab", {0: "a"}),
     ]
     run_suite(env, "Quantifier Tests", cases)
+    _run_empty_iteration_tests(env)
+
+def _run_empty_iteration_tests(env):
+    """Checks that a loop stops after an iteration that matched nothing, as CPython does."""
+    cases = [
+        # (pattern, method, text, span of every group, (-1, -1) if unset)
+        # 9. After an empty iteration, another one that would consume isn't tried,
+        # even where an inner loop could not repeat the empty match.
+        ("(?:a*|.)*", "match", "ab", [(0, 1)]),
+        ("(?:(?:)*|.)*", "match", "ab", [(0, 0)]),
+        ("(?:(?:a?)*|.)*", "match", "ab", [(0, 1)]),
+        ("((?:a?)*|.)*", "match", "bb", [(0, 0), (0, 0)]),
+        ("(?:(?:a?)*|(.))*", "match", "bb", [(0, 0), (-1, -1)]),
+        ("(?:((?:a?)*)|(.))*", "match", "ab", [(0, 1), (1, 1), (-1, -1)]),
+        ("(?:x?(?:a?)*|.)*", "match", "bb", [(0, 0)]),
+        ("(?:(?:a?){2,}|.)*", "match", "bb", [(0, 0)]),
+        ("(?:(?:a?)*|.)+", "match", "bb", [(0, 0)]),
+        ("(?:(?:a?)*|.)*?b", "match", "bb", [(0, 1)]),
+        ("(?:()|a)*?", "fullmatch", "a", [(0, 1), (-1, -1)]),
+
+        # The loop still iterates when the rest of the pattern needs it to, and an
+        # empty iteration after a non-empty one still sets its groups.
+        ("(?:(?:a?)*|.)*$", "match", "bb", [(0, 2)]),
+        ("(?:a*|.)*c", "search", "abc", [(0, 3)]),
+        ("(a|)*", "match", "aa", [(0, 2), (2, 2)]),
+
+        # 10. A + always tries a second iteration, even after an empty first one.
+        ("(?:()|a)+?", "fullmatch", "a", [(0, 1), (0, 0)]),
+        ("(?:()|a)+", "fullmatch", "a", [(0, 1), (1, 1)]),
+    ]
+    for pattern, method, text, expected in cases:
+        p = compile(pattern)
+        m = {"fullmatch": p.fullmatch, "match": p.match, "search": p.search}[method](text)
+        actual = [m.span(g) for g in range(p.group_count + 1)] if m else None
+        assert_eq(env, actual, expected, "%s(%r, %r)" % (method, pattern, text))
