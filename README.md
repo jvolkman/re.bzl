@@ -113,6 +113,7 @@ That said, it _does_ work, and by optimizing for performance within the constrai
 | `$`    | at end of text or line (m=true)       |
 | `\A`   | at beginning of text                  |
 | `\z`   | at end of text                        |
+| `\Z`   | at end of text (Python's spelling)    |
 | `\b`   | at ASCII word boundary                |
 | `\B`   | not at ASCII word boundary            |
 

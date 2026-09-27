@@ -1255,7 +1255,8 @@ def compile_regex(pattern, flags = 0, start_group_id = 0):
                     instructions += [(OP_ANCHOR_START, None, None, None)]
                     i += 2
                     continue
-                elif next_c == "z":
+                elif next_c == "z" or next_c == "Z":
+                    # \z (RE2) and \Z (Python) both match only at the end of the text.
                     instructions += [(OP_ANCHOR_END, None, None, None)]
                     i += 2
                     continue
