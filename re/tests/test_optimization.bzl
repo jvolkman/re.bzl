@@ -79,6 +79,7 @@ def run_tests_optimization(env):
     _run_search_end_anchored_tests(env)
     _run_search_suffix_endpos_tests(env)
     _run_first_skip_tests(env)
+    _run_windowed_strip_tests(env)
 
 def _run_match_fast_path_tests(env):
     """Checks that the anchored match() fast path agrees with the NFA."""
@@ -164,3 +165,26 @@ def _run_first_skip_tests(env):
     assert_span(env, match("a+", ""), None, "match a+ on empty input")
     assert_span(env, compile(r"\d+").match("ab12", 2), (2, 4), "match \\d+ at pos=2")
     assert_span(env, compile(r"\d+").fullmatch("ab12", 2), (2, 4), "fullmatch \\d+ at pos=2")
+
+def _run_windowed_strip_tests(env):
+    """Checks runs of characters that cross the windows of the windowed lstrip/rstrip."""
+
+    # The windows hold 64, 256, 1024, 4096, 16384 and then 65536 characters.
+    for n in [63, 64, 65, 320, 1344, 87361]:
+        run = "a" * n
+
+        # The first-character prefilter of an unanchored search (lstrip).
+        assert_span(env, search(r"\d", run + "1"), (n, n + 1), "search \\d after %d chars" % n)
+
+        # The suffix search fast path (rstrip).
+        assert_span(env, search("[ab]*c", run + "c"), (0, n + 1), "search [ab]*c over %d chars" % n)
+
+        # The greedy loop of the match() fast path (lstrip), with and without endpos.
+        assert_span(env, match("xa*", "x" + run), (0, n + 1), "match xa* over %d chars" % n)
+        assert_span(env, compile("xa*").match("x" + run + "aa", 0, n + 1), (0, n + 1), "match xa* up to endpos over %d chars" % n)
+
+        # A greedy loop in the NFA (lstrip). Its thread steps once per character, so
+        # the longest run is skipped.
+        if n < 2000:
+            assert_span(env, search("(x)a*$", "x" + run), (0, n + 1), "search (x)a*$ over %d chars" % n)
+            assert_span(env, match("(x)(?i:a*)$", "x" + run.upper()), (0, n + 1), "match (x)(?i:a*)$ over %d chars" % n)

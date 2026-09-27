@@ -23,10 +23,13 @@ load(
     "ORD_LOOKUP",
 )
 
-# Default window size for windowed string operations.
-# Windowing avoids creating massive intermediate string slices, which can
-# lead to O(N^2) memory and time behavior in Starlark for large inputs.
-_WINDOW_SIZE = 65536
+# Windowed strips copy the input one window at a time instead of s[start:],
+# which would cost O(len(s)) per call, and O(N^2) over a scan of a large input.
+# Windows start small, since most runs are short (the unanchored search
+# prefilter strips once per match), and grow 4x per step up to
+# _MAX_WINDOW_SIZE, so that long runs take few steps.
+_MIN_WINDOW_SIZE = 64
+_MAX_WINDOW_SIZE = 65536
 
 def _windowed_lstrip(s, chars, start, end = None, lower = False):
     """Lstrips chars from s[start:end] using windowing to avoid large copies.
@@ -36,8 +39,9 @@ def _windowed_lstrip(s, chars, start, end = None, lower = False):
     if end == None:
         end = len(s)
     pos = start
-    for _ in range(end // _WINDOW_SIZE + 1):
-        stop = pos + _WINDOW_SIZE
+    size = _MIN_WINDOW_SIZE
+    for _ in range(end // _MIN_WINDOW_SIZE + 2):
+        stop = pos + size
         if stop > end:
             stop = end
         window = s[pos:stop]
@@ -46,25 +50,30 @@ def _windowed_lstrip(s, chars, start, end = None, lower = False):
         if not window:
             break
         stripped = window.lstrip(chars)
-        match_len = len(window) - len(stripped)
-        pos += match_len
-        if len(stripped) > 0:
+        pos += len(window) - len(stripped)
+        if stripped:
             break
+        if size < _MAX_WINDOW_SIZE:
+            size *= 4
     return pos - start
 
 def _windowed_rstrip(s, chars, end):
     """Rstrips chars from s[:end] using windowing to avoid large copies."""
     pos = end
-    for _ in range(end // _WINDOW_SIZE + 1):
-        start = max(0, pos - _WINDOW_SIZE)
+    size = _MIN_WINDOW_SIZE
+    for _ in range(end // _MIN_WINDOW_SIZE + 2):
+        start = pos - size
+        if start < 0:
+            start = 0
         window = s[start:pos]
         if not window:
             break
         stripped = window.rstrip(chars)
-        match_len = len(window) - len(stripped)
-        pos -= match_len
-        if len(stripped) > 0:
+        pos -= len(window) - len(stripped)
+        if stripped:
             break
+        if size < _MAX_WINDOW_SIZE:
+            size *= 4
     return end - pos
 
 # Types
@@ -880,7 +889,7 @@ def match_regs(bytecode, text, group_count, start_index = 0, end_index = None, h
                     if opt.greedy_set_chars != None and not opt.is_ungreedy_loop:
                         # Greedy match the rest. (A lazy loop matches zero iterations here.)
                         strip_text = input_lower if opt.is_greedy_case_insensitive else text
-                        match_len = _windowed_lstrip(strip_text[:effective_len], opt.greedy_set_chars, match_end)
+                        match_len = _windowed_lstrip(strip_text, opt.greedy_set_chars, match_end, effective_len)
                         match_end += match_len
                     else:
                         # No greedy set, just prefix(+set)
