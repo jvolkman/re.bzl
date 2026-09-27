@@ -681,10 +681,12 @@ def _optimize_greedy_loops(instructions):
                 # Case 1: Greedy Loop Split(Body, Exit)
                 # pc1 = Body, pc2 = Exit
                 # The rewrite drops the two instructions after the split, so the body
-                # must immediately follow it.
+                # must immediately follow it, and the exit must follow the loop back.
+                # (An empty `(?:)?` emits SPLIT(i + 1, i + 1), which is not a loop even
+                # if a `+` jumps back to it: `(?:(?:)?a)+`.)
                 body_inst = instructions[pc1]
                 loop_back_pc = pc1 + 1
-                if pc1 == i + 1 and loop_back_pc < num_insts:
+                if pc1 == i + 1 and pc2 == i + 3 and loop_back_pc < num_insts:
                     loop_inst = instructions[loop_back_pc]
                     if (loop_inst[0] == OP_JUMP and loop_inst[2] == i) or \
                        (loop_inst[0] == OP_SPLIT and (loop_inst[2] == i or loop_inst[3] == i)):
@@ -700,7 +702,7 @@ def _optimize_greedy_loops(instructions):
                 # pc1 = Exit, pc2 = Body
                 body_inst = instructions[pc2]
                 loop_back_pc = pc2 + 1
-                if pc2 == i + 1 and loop_back_pc < num_insts:
+                if pc2 == i + 1 and pc1 == i + 3 and loop_back_pc < num_insts:
                     loop_inst = instructions[loop_back_pc]
                     if (loop_inst[0] == OP_JUMP and loop_inst[2] == i) or \
                        (loop_inst[0] == OP_SPLIT and (loop_inst[2] == i or loop_inst[3] == i)):

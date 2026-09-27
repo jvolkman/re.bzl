@@ -63,5 +63,11 @@ def run_tests_quantifiers(env):
         ("a{100}", "a" * 99, None),
         # 7. Regression: Greedy match with optional group at end
         (r"\d{4}-\d{2}-\d{2}(?:[Tt ]\d{2}:\d{2})?", "1979-05-27T07:32", {0: "1979-05-27T07:32"}),
+
+        # 8. An empty optional group at the start of a repeated group: `(?:(?:)?a)+`
+        # is `a+`, not `a*?`.
+        ("(?:(?:)?a)+b", "b", None),
+        ("(?:(?:)?\\d)+", "a12", {0: "12"}),
+        ("(?:(?:)??a)+?", "xaab", {0: "a"}),
     ]
     run_suite(env, "Quantifier Tests", cases)
