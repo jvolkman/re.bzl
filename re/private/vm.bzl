@@ -28,15 +28,19 @@ load(
 # lead to O(N^2) memory and time behavior in Starlark for large inputs.
 _WINDOW_SIZE = 65536
 
-def _windowed_lstrip(s, chars, start, lower = False):
-    """Lstrips chars from s[start:] using windowing to avoid large copies.
+def _windowed_lstrip(s, chars, start, end = None, lower = False):
+    """Lstrips chars from s[start:end] using windowing to avoid large copies.
 
     If lower is True, each window is lowercased before stripping.
     """
-    n = len(s)
+    if end == None:
+        end = len(s)
     pos = start
-    for _ in range(n // _WINDOW_SIZE + 1):
-        window = s[pos:pos + _WINDOW_SIZE]
+    for _ in range(end // _WINDOW_SIZE + 1):
+        stop = pos + _WINDOW_SIZE
+        if stop > end:
+            stop = end
+        window = s[pos:stop]
         if lower:
             window = window.lower()
         if not window:
@@ -202,11 +206,12 @@ def _get_epsilon_closure(instructions, input_str, input_len, start_pc, start_reg
                 if last_end >= current_idx:
                     match_len = last_end - current_idx
                 else:
-                    # Compute and cache
+                    # Compute and cache. The run stops at input_len (endpos): the loop
+                    # only exits once it has consumed the whole run.
                     if is_ci and input_lower != None:
-                        match_len = _windowed_lstrip(input_lower, chars, current_idx)
+                        match_len = _windowed_lstrip(input_lower, chars, current_idx, input_len)
                     else:
-                        match_len = _windowed_lstrip(input_str, chars, current_idx, lower = is_ci)
+                        match_len = _windowed_lstrip(input_str, chars, current_idx, input_len, lower = is_ci)
                     loop_cache[pc] = current_idx + match_len
 
                 if match_len == 0:
@@ -238,9 +243,9 @@ def _get_epsilon_closure(instructions, input_str, input_len, start_pc, start_reg
                     else:
                         # Compute and cache
                         if is_ci and input_lower != None:
-                            match_len = _windowed_lstrip(input_lower, chars, current_idx)
+                            match_len = _windowed_lstrip(input_lower, chars, current_idx, input_len)
                         else:
-                            match_len = _windowed_lstrip(input_str, chars, current_idx, lower = is_ci)
+                            match_len = _windowed_lstrip(input_str, chars, current_idx, input_len, lower = is_ci)
                         loop_cache[pc] = current_idx + match_len
 
                     if match_len > 0:

@@ -181,6 +181,12 @@ def run_tests_api(env):
     assert_eq(env, bool(search("abc$", "xabcy", endpos = 4)), True, "endpos works with $ anchor")
     assert_eq(env, bool(match(r"abc\b", "abc.def", endpos = 3)), True, "endpos works with \b boundary")
 
+    # A greedy loop stops at endpos, even where its run of characters continues.
+    assert_span(env, compile("(x)a*$").search("xaaaa", 0, 3), (0, 3), "greedy loop stops at endpos")
+    assert_span(env, compile("(x)[ab]*$").fullmatch("xabab", 0, 3), (0, 3), "greedy set loop stops at endpos")
+    assert_span(env, compile("(x)(?i:a*)$").search("xAAAA", 0, 3), (0, 3), "case-insensitive greedy loop stops at endpos")
+    assert_span(env, compile("(x)(?i:a*)$").match("xAAAA", 0, 3), (0, 3), "case-insensitive greedy loop stops at endpos (match)")
+
     # 15. groupdict()
     m_dict = search(r"(?P<first>a)(?P<second>b)", "ab")
     assert_eq(env, m_dict.groupdict(), {"first": "a", "second": "b"}, "groupdict returns correct dict")
