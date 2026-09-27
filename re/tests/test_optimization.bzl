@@ -56,6 +56,14 @@ def run_tests_optimization(env):
         ("a*$", "aaa", {0: "aaa"}),
         # search("a*$", "aaab") matches "" at the end (index 4)
         ("a*$", "aaab", {0: ""}),
+        # A loop before `^` must be able to back off to zero iterations, and one
+        # before a multiline `$` must be able to give back a "\n".
+        ("a*^", "a", {0: ""}),
+        ("(?i)[a-c]*^", "C", {0: ""}),
+        ("(?m)\\s*$", " \n x", {0: " "}),
+        ("(?m)x\\s*$", "x \n y", {0: "x "}),
+        ("(?m)[a\n]*$", "a\n\nb", {0: "a\n"}),
+        ("(?m)[ \t]*$", "a \nb", {0: " "}),
 
         # 7. Dot-Star Loop
         (".*a", "baaa", {0: "baaa"}),
@@ -91,6 +99,10 @@ def _run_match_fast_path_tests(env):
         ("[ab]*b", "abab", (0, 4)),
         ("x[ab]*ab", "xabab", (0, 5)),
         ("x[a-c]*d", "xabcd", (0, 5)),
+
+        # A loop backs off for `^` and gives back a "\n" for a multiline `$`.
+        ("a*^", "aa", (0, 0)),
+        ("(?m)\\s*$", " \n x", (0, 1)),
     ]
     for pattern, text, expected in cases:
         assert_span(env, match(pattern, text), expected, "match(%r, %r)" % (pattern, text))

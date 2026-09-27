@@ -571,11 +571,16 @@ def _is_disjoint(body_inst, next_inst):
         # Conservative: Skip if next is Set
         return False
 
-    if n_type == OP_ANCHOR_END or n_type == OP_ANCHOR_LINE_END:
+    if n_type == OP_ANCHOR_END:
         return True
 
-    if n_type == OP_ANCHOR_START or n_type == OP_ANCHOR_LINE_START:
-        return True
+    if n_type == OP_ANCHOR_LINE_END:
+        # A multiline `$` also matches before a "\n", so a loop that can consume one
+        # may have to give it back: `(?m)\s*$` matches " " in " \n x".
+        return "\n" not in b_chars
+
+    # `^` is not disjoint either: a loop that consumed characters makes it fail where
+    # zero iterations would have matched (`a*^` matches "" at 0 in "a").
 
     # Default unsafe
     return False
