@@ -290,13 +290,18 @@ def _process_batch(instructions, batch, input_str, current_idx, input_len, input
             char_lower = char.lower()
 
     # Process in priority order (0 = highest)
+    next_idx = current_idx + 1
     for i in range(len(batch)):
         pc, regs, skip_idx = batch[i]
         if skip_idx > current_idx:
             # Still skipping due to previous OP_STRING match.
             # Just pass it along while maintaining priority.
-            if pc not in next_threads_dict:
-                next_threads_dict[pc] = True
+            # A thread is its pc and the index it resumes at: it only duplicates a
+            # thread that resumes at the same index. Single-character steps resume at
+            # next_idx and are keyed by the pc alone, others by (pc, index).
+            key = pc if skip_idx == next_idx else (pc, skip_idx)
+            if key not in next_threads_dict:
+                next_threads_dict[key] = True
                 next_threads_list += [(pc, regs, skip_idx)]
             continue
 
@@ -331,21 +336,22 @@ def _process_batch(instructions, batch, input_str, current_idx, input_len, input
         elif itype == OP_STRING:
             s = inst[1]  # val
             if inst[2]:  # arg1 = is_ci
-                if input_lower != None or lower_on_demand:
-                    if (input_lower.startswith(s, current_idx) if input_lower != None else input_str[current_idx:current_idx + len(s)].lower() == s):
-                        match_len = len(s)
-                        next_pc = pc + 1
-                        if next_pc not in next_threads_dict:
-                            next_threads_dict[next_pc] = True
-                            next_threads_list += [(next_pc, regs, current_idx + match_len)]
-                        continue
-            elif input_str.startswith(s, current_idx):
-                match_len = len(s)
-                next_pc = pc + 1
-                if next_pc not in next_threads_dict:
-                    next_threads_dict[next_pc] = True
-                    next_threads_list += [(next_pc, regs, current_idx + match_len)]
-                continue
+                if input_lower != None:
+                    match_found = input_lower.startswith(s, current_idx)
+                elif lower_on_demand:
+                    match_found = input_str[current_idx:current_idx + len(s)].lower() == s
+            else:
+                match_found = input_str.startswith(s, current_idx)
+            if match_found:
+                resume_idx = current_idx + len(s)
+                if resume_idx <= input_len:  # The string must end by endpos.
+                    # An OP_STRING has at least two characters, so it never resumes at
+                    # next_idx: its threads are keyed by (pc, index).
+                    key = (pc + 1, resume_idx)
+                    if key not in next_threads_dict:
+                        next_threads_dict[key] = True
+                        next_threads_list += [(pc + 1, regs, resume_idx)]
+            continue
         elif itype == OP_ANY:
             match_found = True
         elif itype == OP_ANY_NO_NL:
@@ -373,7 +379,7 @@ def _process_batch(instructions, batch, input_str, current_idx, input_len, input
 
             if next_pc not in next_threads_dict:
                 next_threads_dict[next_pc] = True
-                next_threads_list += [(next_pc, regs, current_idx + 1)]
+                next_threads_list += [(next_pc, regs, next_idx)]
 
     return next_threads_list, best_match_regs, matched_priority_index
 
