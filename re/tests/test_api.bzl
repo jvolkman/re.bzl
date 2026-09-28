@@ -48,6 +48,18 @@ def run_tests_api(env):
     assert_eq(env, sub("a+", "b", "aaabaa"), "bbb", "sub simple")
     assert_eq(env, sub(r"(\w+)=(\d+)", r"\2=\1", "a=1 b=2"), "1=a 2=b", "sub with backrefs")
 
+    # Replacement templates follow Python (errors are in test_sub_errors.bzl).
+    assert_eq(env, sub("(a)", r"[\n\t\\]", "xa"), "x[\n\t\\]", "sub template escapes")
+    assert_eq(env, sub("(a)", r"[\b\a\f\v\r]", "xa"), "x[\010\007\014\013\r]", "sub template escapes: \\b is a backspace")
+    assert_eq(env, sub("(a)", r"[\\1]", "xa"), "x[\\1]", "sub escaped backslash before a digit")
+    assert_eq(env, sub("(a)", r"[\-\&]", "xa"), "x[\\-\\&]", "sub keeps other escapes")
+    assert_eq(env, sub("(a)", r"[\0|\012|\0123|\101]", "xa"), "x[\000|\n|\n3|A]", "sub octal escapes")
+    assert_eq(env, sub("(a)", r"[\g<0>\g<1>0]", "xa"), "x[aa0]", "sub \\g<N>")
+    assert_eq(env, sub("(?P<n>a)", r"[\g<n>]", "xa"), "x[a]", "sub \\g<name>")
+    assert_eq(env, sub("(a)|b", r"[\1]", "b"), "[]", "sub unmatched group is empty")
+    twelve = "(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)(k)(l)"
+    assert_eq(env, sub(twelve, r"[\12\1\2]", "abcdefghijkl"), "[lab]", "sub two-digit group numbers")
+
     # 4. split
     assert_eq(env, split(r"\s+", "a b  c"), ["a", "b", "c"], "split simple")
     assert_eq(env, split(r"(\s+)", "a b  c"), ["a", " ", "b", "  ", "c"], "split with groups")

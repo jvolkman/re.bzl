@@ -2,7 +2,7 @@
 
 load(
     "//re/private:constants.bzl",
-    "MAX_GROUP_NAME_LEN",
+    "CHR_LOOKUP",
     "OP_ANCHOR_END",
     "OP_ANCHOR_LINE_END",
     "OP_ANCHOR_LINE_START",
@@ -156,12 +156,13 @@ def _get_epsilon_closure(instructions, input_str, input_len, start_pc, start_reg
                 pc1 = inst[2]  # arg1
                 pc2 = inst[3]  # arg2
 
-                if inst[1] != None and visited[pc1 if pc1 < pc2 else pc2] >= visited_gen:
-                    # The back edge of a loop whose body can match empty (see
-                    # _loop_back_mark), and its loop branch (the smaller target) was
-                    # already reached at this position: the iteration that just ended
-                    # matched nothing, or a thread with higher priority already started
-                    # an iteration here. Either way, don't start another one; exit.
+                if inst[1] != None and visited[inst[1]] >= visited_gen:
+                    # A marked SPLIT (see _loop_back_mark): the back edge of a loop whose
+                    # body can match empty, or an optional copy of such a body in
+                    # `{n,m}`. The pc it checks (the loop's entry, or the previous copy's
+                    # SPLIT) was already reached at this position: the iteration that
+                    # just ended matched nothing, or a thread with higher priority already
+                    # started an iteration here. Either way, don't start another one; exit.
                     pc = pc2 if pc1 < pc2 else pc1
                 else:
                     # Push lower priority (pc2) first so we follow pc1 (higher priority) immediately
@@ -528,13 +529,39 @@ def execute(instructions, input_str, num_regs, start_index = 0, end_index = None
 
     return best_match_regs
 
+# Escapes that stand for one character in a replacement template, as in Python.
+# (\b is a backspace here, not a word boundary.)
+_TEMPLATE_ESCAPES = {
+    "a": "\007",
+    "b": "\010",
+    "f": "\014",
+    "n": "\n",
+    "r": "\r",
+    "t": "\t",
+    "v": "\013",
+    "\\": "\\",
+}
+
+_OCT_DIGITS = "01234567"
+_ASCII_LETTERS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
 # buildifier: disable=list-append
-def parse_replacement_template(repl, named_groups = {}):
+def parse_replacement_template(repl, named_groups = {}, group_count = None):
     """Parses a replacement string into a template of tokens.
+
+    Follows Python's rules:
+    - `\\1` … `\\99` and `\\g<N>` refer to groups by number, `\\g<name>` by name,
+      and `\\g<0>` to the whole match.
+    - `\\0`, and three octal digits such as `\\101`, are octal character codes.
+    - `\\n`, `\\t`, `\\\\` etc. stand for single characters.
+    - Other escaped ASCII letters are errors; other escaped characters are kept
+      with their backslash (`\\-` stays `\\-`).
 
     Args:
       repl: Replacement string.
       named_groups: Map of group names to IDs.
+      group_count: Number of groups in the pattern. If given, a reference to a
+        group that doesn't exist is an error.
 
     Returns:
       A list of tokens (strings for literals, integers for group IDs).
@@ -550,37 +577,76 @@ def parse_replacement_template(repl, named_groups = {}):
             continue
 
         c = repl[i]
-        if c == "\\" and i + 1 < repl_len:
-            next_c = repl[i + 1]
-            gid = -1
+        if c != "\\":
+            current_literal += [c]
+            continue
 
-            if next_c >= "0" and next_c <= "9":
+        if i + 1 >= repl_len:
+            fail("bad escape (end of pattern) at position %d in replacement %r" % (i, repl))
+        next_c = repl[i + 1]
+        gid = -1
+
+        if next_c == "g":
+            if i + 2 >= repl_len or repl[i + 2] != "<":
+                fail("missing < at position %d in replacement %r" % (i + 2, repl))
+            start_name = i + 3
+            end_name = repl.find(">", start_name)
+            if end_name == -1:
+                fail("missing >, unterminated name at position %d in replacement %r" % (start_name, repl))
+            name = repl[start_name:end_name]
+            if not name:
+                fail("missing group name at position %d in replacement %r" % (start_name, repl))
+            if name.isdigit():
+                gid = int(name)
+            elif name in named_groups:
+                gid = named_groups[name]
+            else:
+                fail("IndexError: unknown group name %r in replacement %r" % (name, repl))
+            skip = end_name - i
+        elif next_c == "0":
+            # \0 followed by up to two more octal digits.
+            end = i + 2
+            for k in range(i + 2, min(i + 4, repl_len)):
+                if repl[k] not in _OCT_DIGITS:
+                    break
+                end = k + 1
+            current_literal += [CHR_LOOKUP[int(repl[i + 1:end], 8)]]
+            skip = end - i - 1
+            continue
+        elif next_c >= "1" and next_c <= "9":
+            # One or two digits are a group number; three octal digits are a character.
+            if (i + 3 < repl_len and next_c in _OCT_DIGITS and repl[i + 2] in _OCT_DIGITS and
+                repl[i + 3] in _OCT_DIGITS):
+                code = int(repl[i + 1:i + 4], 8)
+                if code > 255:
+                    fail("octal escape value \\%s outside of range 0-0o377 in replacement %r" % (repl[i + 1:i + 4], repl))
+                current_literal += [CHR_LOOKUP[code]]
+                skip = 3
+                continue
+            if i + 2 < repl_len and repl[i + 2] >= "0" and repl[i + 2] <= "9":
+                gid = int(repl[i + 1:i + 3])
+                skip = 2
+            else:
                 gid = int(next_c)
                 skip = 1
-            elif next_c == "g" and i + 2 < repl_len and repl[i + 2] == "<":
-                # Named group \g<name>
-                start_name = i + 3
-                end_name = -1
-                for k in range(start_name, min(start_name + MAX_GROUP_NAME_LEN, repl_len)):
-                    if repl[k] == ">":
-                        end_name = k
-                        break
+        elif next_c in _TEMPLATE_ESCAPES:
+            current_literal += [_TEMPLATE_ESCAPES[next_c]]
+            skip = 1
+            continue
+        elif next_c in _ASCII_LETTERS:
+            fail("bad escape \\%s at position %d in replacement %r" % (next_c, i, repl))
+        else:
+            current_literal += [c]
+            continue
 
-                if end_name != -1:
-                    name = repl[start_name:end_name]
-                    if name in named_groups:
-                        gid = named_groups[name]
-                    skip = end_name - i
+        if group_count != None and gid > group_count:
+            fail("invalid group reference %d at position %d in replacement %r" % (gid, i + 1, repl))
 
-            if gid != -1:
-                # Flush literal buffer
-                if current_literal:
-                    tokens += ["".join(current_literal)]
-                    current_literal = []
-                tokens += [gid]
-                continue
-
-        current_literal += [c]
+        # Flush literal buffer
+        if current_literal:
+            tokens += ["".join(current_literal)]
+            current_literal = []
+        tokens += [gid]
 
     if current_literal:
         tokens += ["".join(current_literal)]

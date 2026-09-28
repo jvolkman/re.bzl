@@ -254,6 +254,14 @@ Return the string obtained by replacing the leftmost non-overlapping occurrences
 Empty matches are replaced too. As in Python 3.7+, a non-empty match may start
 where the previous empty match ended.
 
+A replacement string is a template, with Python's rules. `\1` … `\99` and
+`\g<1>` insert a group by number, `\g<name>` by name, and `\g<0>` the whole
+match; a group that didn't take part in the match inserts "". `\n`, `\t`,
+`\\` and the other standard escapes, and octal escapes (`\0`, `\012`,
+`\101`), stand for single characters. Other escapes of ASCII letters (`\d`),
+references to groups that don't exist, and a trailing backslash are errors.
+Use a raw string (`r"\1"`) so Starlark passes the backslashes through.
+
 
 **PARAMETERS**
 
@@ -261,7 +269,7 @@ where the previous empty match ended.
 | Name  | Description | Default Value |
 | :------------- | :------------- | :------------- |
 | <a id="re.sub-pattern"></a>pattern |  The regex pattern string or a compiled regex object.   |  none |
-| <a id="re.sub-repl"></a>repl |  The replacement string or function.   |  none |
+| <a id="re.sub-repl"></a>repl |  The replacement string, or a function that takes a MatchObject and returns the replacement.   |  none |
 | <a id="re.sub-text"></a>text |  The text to search.   |  none |
 | <a id="re.sub-count"></a>count |  The maximum number of pattern occurrences to replace. If non-positive, all occurrences are replaced.   |  `0` |
 | <a id="re.sub-flags"></a>flags |  Regex flags (only if pattern is a string).   |  `0` |

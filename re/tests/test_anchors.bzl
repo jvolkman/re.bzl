@@ -19,6 +19,13 @@ def _test_anchors(env):
         ("abc\\z", "abc", {0: "abc"}),
         ("abc\\z", "abc\n", None),
 
+        # \Z is Python's spelling of \z
+        ("abc\\Z", "abc", {0: "abc"}),
+        ("abc\\Z", "abc\n", None),
+        ("abc\\Z", "abcZ", None),
+        ("(?m)abc\\Z", "abc\nabc", {0: "abc"}),
+        ("(?m)a\\Z", "a\nb", None),
+
         # Word Boundaries
         ("\\bcat\\b", "cat", {0: "cat"}),
         ("\\bcat\\b", "scatter", None),
