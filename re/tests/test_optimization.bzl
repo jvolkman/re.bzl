@@ -220,6 +220,19 @@ def _run_mixed_case_tests(env):
         # Only the loop or the suffix ignores case.
         ("(?i:[a-c]*)d", "search", "xaBDd", (4, 5)),
         ("[A-C]*(?i:d)", "match", "ABDd", (0, 3)),
+
+        # match() finds a case-insensitive suffix and checks a case-insensitive loop in
+        # either case, but a case-sensitive part only in its own case.
+        ("[a-zA-Z]*?(?i:d)", "match", "aDd", (0, 2)),
+        ("[a-c]*?(?i:D)", "match", "acdD", (0, 3)),
+        ("(?i)x[a-c]*d", "match", "xABCd", (0, 5)),
+        ("(?i)x[a-c]*?D", "match", "xAcd", (0, 4)),
+        ("(?i:[a-c]*)d", "match", "aBd", (0, 3)),
+        ("(?i:[a-c]*)d", "match", "aBDd", None),
+        ("x(?i:[a-c]*)D$", "match", "xAbD", (0, 4)),
+        ("x(?i:[a-c]*)D$", "match", "xAcd", None),
+        ("x[a-c]*(?i:d)$", "match", "xabD", (0, 4)),
+        ("x[a-c]*(?i:d)$", "match", "xaBD", None),
     ]
     for pattern, method, text, expected in cases:
         prog = compile(pattern)

@@ -861,16 +861,23 @@ def match_regs(bytecode, text, group_count, start_index = 0, end_index = None, h
                 else:
                     fast_path_ok = False
 
-            # 2. Match greedy_set_chars and suffix
+            # 2. Match greedy_set_chars and suffix. Each part is compared case-insensitively
+            # only if that part of the pattern is (see fullmatch_regs).
             if fast_path_ok:
+                suffix_text = text
+                check_suffix = opt.suffix
+                if opt.is_suffix_case_insensitive:
+                    suffix_text = input_lower
+                    check_suffix = opt.suffix.lower()
+                loop_text = input_lower if opt.is_greedy_case_insensitive else text
                 if opt.is_anchored_end:
                     # Must match suffix at the end and greedy_set in between
-                    if text.startswith(opt.suffix, effective_len - len(opt.suffix)):
+                    if suffix_text.startswith(check_suffix, effective_len - len(opt.suffix)):
                         middle_start = match_end
                         middle_end = effective_len - len(opt.suffix)
                         if middle_end >= middle_start:
                             if opt.greedy_set_chars != None:
-                                strip_len = _windowed_lstrip(text, opt.greedy_set_chars, middle_start)
+                                strip_len = _windowed_lstrip(loop_text, opt.greedy_set_chars, middle_start)
                                 if middle_start + strip_len >= middle_end:
                                     match_end = effective_len
                                 else:
@@ -889,11 +896,11 @@ def match_regs(bytecode, text, group_count, start_index = 0, end_index = None, h
                     # Only valid for lazy loops, or greedy loops that cannot consume the suffix.
                     if opt.greedy_set_chars != None and not opt.is_ungreedy_loop and not opt.is_suffix_disjoint:
                         fast_path_ok = False
-                    found_idx = text.find(opt.suffix, match_end) if fast_path_ok else -1
+                    found_idx = suffix_text.find(check_suffix, match_end) if fast_path_ok else -1
                     if found_idx != -1 and found_idx + len(opt.suffix) <= effective_len:
                         # Check if everything between match_end and found_idx is in greedy_set
                         if opt.greedy_set_chars != None:
-                            strip_len = _windowed_lstrip(text, opt.greedy_set_chars, match_end)
+                            strip_len = _windowed_lstrip(loop_text, opt.greedy_set_chars, match_end)
                             if match_end + strip_len >= found_idx:
                                 match_end = found_idx + len(opt.suffix)
                             else:
