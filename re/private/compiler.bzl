@@ -175,7 +175,10 @@ def _new_set_builder(case_insensitive = False):
                 seen_str[c] = True
                 if len(all_chars_val) < ALL_CHARS_STR_LIMIT:
                     all_chars_val += [c]
-        all_chars_str = "".join(all_chars_val)
+
+        # The VM passes all_chars to lstrip()/rstrip(), which sort their argument on
+        # every call; that is cheapest when it is already sorted.
+        all_chars_str = "".join(sorted(all_chars_val))
 
         # Check if set is simple (fully represented by all_chars)
         is_simple = (len(state["ranges"]) == 0 and
@@ -248,7 +251,7 @@ def _parse_escape(pattern, i, pattern_len):
 
         if i + 2 < pattern_len:
             hex_str = pattern[i + 1:i + 3]
-            if not hex_str.lstrip("0123456789abcdefABCDEF"):
+            if not hex_str.lstrip("0123456789ABCDEFabcdef"):
                 return _CHR_LOOKUP[int(hex_str, 16)], i + 2
         return "x", i
 
@@ -256,7 +259,7 @@ def _parse_escape(pattern, i, pattern_len):
         # \uXXXX
         if i + 4 < pattern_len:
             hex_str = pattern[i + 1:i + 5]
-            if not hex_str.lstrip("0123456789abcdefABCDEF"):
+            if not hex_str.lstrip("0123456789ABCDEFabcdef"):
                 val = int(hex_str, 16)
                 return _chr(val), i + 4
         return "u", i
@@ -265,7 +268,7 @@ def _parse_escape(pattern, i, pattern_len):
         # \UXXXXXXXX
         if i + 8 < pattern_len:
             hex_str = pattern[i + 1:i + 9]
-            if not hex_str.lstrip("0123456789abcdefABCDEF"):
+            if not hex_str.lstrip("0123456789ABCDEFabcdef"):
                 val = int(hex_str, 16)
                 return _chr(val), i + 8
         return "U", i
@@ -571,11 +574,16 @@ def _is_disjoint(body_inst, next_inst):
         # Conservative: Skip if next is Set
         return False
 
-    if n_type == OP_ANCHOR_END or n_type == OP_ANCHOR_LINE_END:
+    if n_type == OP_ANCHOR_END:
         return True
 
-    if n_type == OP_ANCHOR_START or n_type == OP_ANCHOR_LINE_START:
-        return True
+    if n_type == OP_ANCHOR_LINE_END:
+        # A multiline `$` also matches before a "\n", so a loop that can consume one
+        # may have to give it back: `(?m)\s*$` matches " " in " \n x".
+        return "\n" not in b_chars
+
+    # `^` is not disjoint either: a loop that consumed characters makes it fail where
+    # zero iterations would have matched (`a*^` matches "" at 0 in "a").
 
     # Default unsafe
     return False
@@ -609,41 +617,30 @@ def _remap_inst(inst, old_to_new):
 
     return inst
 
-# buildifier: disable=list-append
+def _shift_inst(inst, old_start, delta):
+    """Returns inst with its absolute jump targets >= old_start shifted by delta."""
+    itype = inst[0]
+    if itype == OP_JUMP:
+        target = inst[2]  # arg1
+        if target != None and target >= old_start:
+            return (OP_JUMP, inst[1], target + delta, None)
+    elif itype == OP_SPLIT:
+        pc1 = inst[2]  # arg1
+        pc2 = inst[3]  # arg2
+        if pc1 != None and pc1 >= old_start:
+            pc1 += delta
+        if pc2 != None and pc2 >= old_start:
+            pc2 += delta
+        return (OP_SPLIT, inst[1], pc1, pc2)
+    elif itype == OP_GREEDY_LOOP or itype == OP_UNGREEDY_LOOP:
+        exit_pc = inst[2]  # arg1
+        if exit_pc != None and exit_pc >= old_start:
+            return (itype, inst[1], exit_pc + delta, inst[3])  # arg2 = is_ci
+    return inst
+
 def _shift_template(template, old_start, delta):
     """Copies a sliced instruction block, shifting absolute jumps."""
-    new_block = []
-
-    for inst in template:
-        itype, val = inst[0], inst[1]
-
-        if itype == OP_JUMP:
-            target = inst[2]  # arg1
-            if target != None and target >= old_start:
-                target += delta
-            new_block += [(OP_JUMP, val, target, None)]
-        elif itype == OP_SPLIT:
-            pc1 = inst[2]  # arg1
-            pc2 = inst[3]  # arg2
-            if pc1 != None and pc1 >= old_start:
-                pc1 += delta
-            if pc2 != None and pc2 >= old_start:
-                pc2 += delta
-            new_block += [(OP_SPLIT, val, pc1, pc2)]
-        elif itype == OP_GREEDY_LOOP:
-            exit_pc = inst[2]  # arg1
-            if exit_pc != None and exit_pc >= old_start:
-                exit_pc += delta
-            new_block += [(OP_GREEDY_LOOP, val, exit_pc, inst[3])]
-        elif itype == OP_UNGREEDY_LOOP:
-            exit_pc = inst[2]  # arg1
-            if exit_pc != None and exit_pc >= old_start:
-                exit_pc += delta
-            new_block += [(OP_UNGREEDY_LOOP, val, exit_pc, inst[3])]
-        else:
-            new_block += [inst]
-
-    return new_block
+    return [_shift_inst(inst, old_start, delta) for inst in template]
 
 def _get_inst_chars(inst):
     """Extracts characters and case-insensitivity from an instruction."""
@@ -651,7 +648,10 @@ def _get_inst_chars(inst):
         return inst[1], inst[2]  # val, is_ci
     elif inst[0] == OP_SET:
         set_struct, is_negated = inst[1]
-        if not is_negated:
+
+        # all_chars lists every member only for a simple set (not one with a negated
+        # POSIX class such as [[:^digit:]]).
+        if not is_negated and set_struct.is_simple:
             return set_struct.all_chars, inst[2]  # is_ci
     elif inst[0] == OP_ANY:
         return _CHR_LOOKUP, False
@@ -666,6 +666,18 @@ def _optimize_greedy_loops(instructions):
     new_insts = []
     old_to_new = {}
     skip = 0
+
+    # OP_UNGREEDY_LOOP takes its exit on the first visit to its pc at a position and
+    # consumes on the second. Inside a loop whose body can match empty (a marked back
+    # edge, see _loop_back_mark), a lazy loop can be entered again at the same
+    # position, and that second entry would only consume: `(a*?)*` fullmatched "aa"
+    # with group 1 at (1, 2), not (2, 2). Those lazy loops stay SPLITs.
+    in_nullable_loop = {}
+    for j in range(num_insts):
+        inst = instructions[j]
+        if inst[0] == OP_SPLIT and inst[1] != None:
+            for k in range(inst[2] if inst[2] < inst[3] else inst[3], j):
+                in_nullable_loop[k] = True
 
     for i in range(num_insts):
         if skip > 0:
@@ -683,9 +695,13 @@ def _optimize_greedy_loops(instructions):
             if pc1 > i and pc1 < num_insts and pc2 > i and pc2 < num_insts:
                 # Case 1: Greedy Loop Split(Body, Exit)
                 # pc1 = Body, pc2 = Exit
+                # The rewrite drops the two instructions after the split, so the body
+                # must immediately follow it, and the exit must follow the loop back.
+                # (An empty `(?:)?` emits SPLIT(i + 1, i + 1), which is not a loop even
+                # if a `+` jumps back to it: `(?:(?:)?a)+`.)
                 body_inst = instructions[pc1]
                 loop_back_pc = pc1 + 1
-                if loop_back_pc < num_insts:
+                if pc1 == i + 1 and pc2 == i + 3 and loop_back_pc < num_insts:
                     loop_inst = instructions[loop_back_pc]
                     if (loop_inst[0] == OP_JUMP and loop_inst[2] == i) or \
                        (loop_inst[0] == OP_SPLIT and (loop_inst[2] == i or loop_inst[3] == i)):
@@ -701,7 +717,7 @@ def _optimize_greedy_loops(instructions):
                 # pc1 = Exit, pc2 = Body
                 body_inst = instructions[pc2]
                 loop_back_pc = pc2 + 1
-                if loop_back_pc < num_insts:
+                if pc2 == i + 1 and pc1 == i + 3 and loop_back_pc < num_insts and i not in in_nullable_loop:
                     loop_inst = instructions[loop_back_pc]
                     if (loop_inst[0] == OP_JUMP and loop_inst[2] == i) or \
                        (loop_inst[0] == OP_SPLIT and (loop_inst[2] == i or loop_inst[3] == i)):
@@ -858,80 +874,117 @@ def _optimize_bytecode(instructions):
 
 # buildifier: disable=list-append
 def _build_alt_tree(instructions, group_ctx):
+    """Inserts the alternation dispatch (a chain of SPLITs) in front of the group body.
+
+    The body is shifted down rather than relocating its first instruction, so jumps
+    that target the first branch from inside the group (e.g. the loop of `a+` in
+    `a+|b`) keep targeting the branch instead of re-entering the dispatch.
+    """
     branches = group_ctx["branch_starts"]
     entry_pc = branches[0]
-    orig_inst = instructions[entry_pc]
-    relocated_pc = len(instructions)
-    instructions += [orig_inst]
-    instructions += [(OP_JUMP, None, entry_pc + 1, None)]
+    num_splits = len(branches) - 1
 
-    tree_start_pc = len(instructions)
-    current_branches = branches[:]
-    current_branches[0] = relocated_pc
+    template = instructions[entry_pc:]
+    new_block = _shift_template(template, entry_pc, num_splits)
+    for _ in range(len(template)):
+        instructions.pop()
 
-    for j in range(len(current_branches) - 1):
-        if j < len(current_branches) - 2:
-            next_split = len(instructions) + 1
-            instructions += [(OP_SPLIT, None, current_branches[j], next_split)]
+    for j in range(num_splits):
+        if j < num_splits - 1:
+            instructions += [(OP_SPLIT, None, branches[j] + num_splits, len(instructions) + 1)]
         else:
-            instructions += [(OP_SPLIT, None, current_branches[j], current_branches[-1])]
+            instructions += [(OP_SPLIT, None, branches[j] + num_splits, branches[j + 1] + num_splits)]
 
-    instructions[entry_pc] = (OP_JUMP, None, tree_start_pc, None)
+    instructions += new_block
+    group_ctx["exit_jumps"] = [j + num_splits for j in group_ctx["exit_jumps"]]
 
 # buildifier: disable=list-append
+def _can_match_empty(insts, start, end):
+    """Returns whether insts[start:end] can reach `end` without consuming input."""
+    seen = {}
+    stack = [start]
+    for _ in range(2 * (end - start) + 2):
+        if not stack:
+            break
+        pc = stack.pop()
+        if pc >= end:
+            return True
+        if pc in seen:
+            continue
+        seen[pc] = True
+        inst = insts[pc]
+        op = inst[0]
+        if op == OP_JUMP:
+            stack += [inst[2]]
+        elif op == OP_SPLIT:
+            stack += [inst[2], inst[3]]
+        elif (op == OP_SAVE or op == OP_ANCHOR_START or op == OP_ANCHOR_END or
+              op == OP_ANCHOR_LINE_START or op == OP_ANCHOR_LINE_END or
+              op == OP_WORD_BOUNDARY or op == OP_NOT_WORD_BOUNDARY):
+            stack += [pc + 1]
+    return False
+
+def _loop_back_mark(insts, atom_start):
+    """Returns the val for the SPLIT that loops back over insts[atom_start:].
+
+    CPython doesn't start another iteration of a loop after one that matched
+    nothing: `(?:a*|.)*` matches "a" in "ab", not "ab". Only a body that can
+    match empty can do that, so only those loops are marked (val True, else None).
+
+    At a marked SPLIT, the smaller target is the loop branch and the larger one
+    the exit. If the VM already reached the loop branch at the current position,
+    an iteration started here, so the VM takes the exit only.
+    """
+    return True if _can_match_empty(insts, atom_start, len(insts)) else None
+
 def _apply_question_mark(insts, atom_start, lazy = False):
     """Applies ? logic. Lazy=True tries skipping first."""
-    template = insts[atom_start:]
-    new_block = _shift_template(template, atom_start, 1)
 
-    # Remove original atom
-    for _ in range(len(insts) - atom_start):
-        insts.pop()
+    # Shift the atom down by one to make room for a SPLIT in front of it.
+    skip_target = len(insts) + 1
+    for pc in range(atom_start, len(insts)):
+        insts[pc] = _shift_inst(insts[pc], atom_start, 1)
 
-    split_pc = len(insts)  # atom_start
-    insts += [None]  # Placeholder
-
-    atom_pc = len(insts)
-    insts += new_block
-
-    skip_target = len(insts)
-
+    atom_pc = atom_start + 1
     if lazy:
-        insts[split_pc] = (OP_SPLIT, None, skip_target, atom_pc)
+        insts.insert(atom_start, (OP_SPLIT, None, skip_target, atom_pc))
     else:
-        insts[split_pc] = (OP_SPLIT, None, atom_pc, skip_target)
+        insts.insert(atom_start, (OP_SPLIT, None, atom_pc, skip_target))
 
 # buildifier: disable=list-append
 def _apply_star(insts, atom_start, lazy = False):
     """Applies * logic. Lazy=True tries skipping first."""
-    template = insts[atom_start:]
-    new_block = _shift_template(template, atom_start, 1)
+    mark = _loop_back_mark(insts, atom_start)
 
-    # Remove original atom
-    for _ in range(len(insts) - atom_start):
-        insts.pop()
+    # Shift the atom down by one to make room for a SPLIT in front of it.
+    end_split_pc = len(insts) + 1
+    skip_target = end_split_pc + 1
+    for pc in range(atom_start, len(insts)):
+        insts[pc] = _shift_inst(insts[pc], atom_start, 1)
 
-    split_pc = len(insts)  # atom_start
-    insts += [None]  # Placeholder
-
-    atom_pc = len(insts)
-    insts += new_block
+    split_pc = atom_start
+    atom_pc = atom_start + 1
 
     # Jump back replaced by SPLIT to allow one extra empty match for groups
-    end_split_pc = len(insts)
-    insts += [None]  # Placeholder
-    skip_target = len(insts)
-
     if lazy:
-        insts[end_split_pc] = (OP_SPLIT, None, skip_target, split_pc)
-        insts[split_pc] = (OP_SPLIT, None, skip_target, atom_pc)
+        insts.insert(split_pc, (OP_SPLIT, None, skip_target, atom_pc))
+        insts += [(OP_SPLIT, mark, skip_target, split_pc)]
     else:
-        insts[end_split_pc] = (OP_SPLIT, None, split_pc, skip_target)
-        insts[split_pc] = (OP_SPLIT, None, atom_pc, skip_target)
+        insts.insert(split_pc, (OP_SPLIT, None, atom_pc, skip_target))
+        insts += [(OP_SPLIT, mark, split_pc, skip_target)]
 
 # buildifier: disable=list-append
 def _apply_plus(insts, atom_start, lazy = False):
     """Applies + logic. Lazy=True tries exit first."""
+    if _can_match_empty(insts, atom_start, len(insts)):
+        # CPython always tries a second iteration after the first, required one,
+        # even if that matched nothing: `(?:()|a)+?` fullmatches "a" with group 1
+        # at (0, 0), where `(?:()|a)*?` leaves it unset. Compile x+ as x x*, the
+        # way {1,} is, so the loop stops only after an empty optional iteration.
+        block_start = len(insts)
+        insts += _shift_template(insts[atom_start:], atom_start, block_start - atom_start)
+        _apply_star(insts, block_start, lazy = lazy)
+        return
 
     # Greedy: atom -> SPLIT(atom_start, next)
     # Lazy: atom -> SPLIT(next, atom_start)
@@ -1366,13 +1419,13 @@ def optimize_matcher(instructions):
         elif all_cs:
             case_insensitive_prefix = False
         else:
-            # Mixed prefix - unsafe for simple case-insensitive fast path search
-            # because .lower().find() will over-match.
-            prefix = ""
-            case_insensitive_prefix = False
+            # Mixed prefix (e.g. `a(?i:b)`): a single find()/startswith() can't check
+            # it, and dropping it would make the fast paths ignore these characters.
+            return None
 
     # After prefix, check for sets and loops
     prefix_set_chars = None
+    is_prefix_set_case_insensitive = False
     greedy_set_chars = None
     is_greedy_case_insensitive = False
 
@@ -1392,25 +1445,28 @@ def optimize_matcher(instructions):
                     else:
                         set_data, is_negated = inst[1]
                         is_ci = inst[2]
-                        if not is_negated:
+                        if not is_negated and set_data.is_simple:
                             chars = set_data.all_chars
 
                     if chars != None:
                         prefix_set_chars = chars
+                        is_prefix_set_case_insensitive = is_ci
                         greedy_set_chars = chars
                         is_greedy_case_insensitive = is_ci
                         idx += 2
                 elif itype == OP_SET:
                     # Case 2: Just a match-one prefix set [set]
                     set_data, is_negated = inst[1]
-                    if not is_negated:
+                    if not is_negated and set_data.is_simple:
                         prefix_set_chars = set_data.all_chars
+                        is_prefix_set_case_insensitive = inst[2]
                         idx += 1
             elif itype == OP_SET:
                 # Case 2 (at end): Just a match-one prefix set [set]
                 set_data, is_negated = inst[1]
-                if not is_negated:
+                if not is_negated and set_data.is_simple:
                     prefix_set_chars = set_data.all_chars
+                    is_prefix_set_case_insensitive = inst[2]
                     idx += 1
 
         elif itype == OP_GREEDY_LOOP or itype == OP_UNGREEDY_LOOP:
@@ -1442,7 +1498,7 @@ def optimize_matcher(instructions):
                         elif atom_inst[0] == OP_SET:
                             set_data, is_negated = atom_inst[1]
                             is_ci = atom_inst[2]
-                            if not is_negated:
+                            if not is_negated and set_data.is_simple:
                                 chars = set_data.all_chars
 
                         if chars != None:
@@ -1476,7 +1532,7 @@ def optimize_matcher(instructions):
                             elif atom_inst[0] == OP_SET:
                                 set_data, is_negated = atom_inst[1]
                                 is_ci = atom_inst[2]
-                                if not is_negated:
+                                if not is_negated and set_data.is_simple:
                                     chars = set_data.all_chars
 
                             if chars != None:
@@ -1518,17 +1574,19 @@ def optimize_matcher(instructions):
         elif all_ci:
             is_suffix_case_insensitive = True
         else:
-            # Mixed suffix - unsafe for clear search
-            suffix = ""
-            is_suffix_case_insensitive = False
+            # Mixed suffix: see the mixed prefix case above.
+            return None
 
     # Check for end anchor or save 1/match
     is_anchored_end = False
 
-    # Skip trailing saves if searching for end
+    # Skip trailing saves if searching for end. The fast paths only fill in group 0,
+    # so a capture group here (an empty one, as in `x()` or `x($)`) rules them out.
     temp_idx = idx
     for _ in range(len(instructions)):
         if temp_idx < len(instructions) and instructions[temp_idx][0] == OP_SAVE:
+            if instructions[temp_idx][2] != 1:  # arg1 = slot
+                return None
             temp_idx += 1
         else:
             break
@@ -1540,16 +1598,25 @@ def optimize_matcher(instructions):
     # Check if we reached the matching end: SAVE 1, MATCH
     for _ in range(len(instructions)):
         if temp_idx < len(instructions) and instructions[temp_idx][0] == OP_SAVE:
+            if instructions[temp_idx][2] != 1:  # arg1 = slot
+                return None
             temp_idx += 1
         else:
             break
 
-    # Calculate disjointness of suffix and greedy set
+    # Calculate disjointness of suffix and greedy set. With scoped flags the two can
+    # differ in case-sensitivity: in `(?i:[a-c]*)B` the loop consumes "B", and in
+    # `[A-C]*(?i:b)` the suffix matches "B". So compare every character the suffix
+    # can match with how the loop matches it (lowered if the loop is case-insensitive).
     is_suffix_disjoint = True
     if greedy_set_chars != None and len(suffix) > 0:
         for i in range(len(suffix)):
-            if suffix[i] in greedy_set_chars:
-                is_suffix_disjoint = False
+            c = suffix[i]
+            for x in ([c.lower(), c.upper()] if is_suffix_case_insensitive else [c]):
+                if (x.lower() if is_greedy_case_insensitive else x) in greedy_set_chars:
+                    is_suffix_disjoint = False
+                    break
+            if not is_suffix_disjoint:
                 break
 
     if temp_idx < len(instructions) and instructions[temp_idx][0] == OP_MATCH:
@@ -1557,6 +1624,7 @@ def optimize_matcher(instructions):
             prefix = prefix,
             case_insensitive_prefix = case_insensitive_prefix,
             prefix_set_chars = prefix_set_chars,
+            is_prefix_set_case_insensitive = is_prefix_set_case_insensitive,
             greedy_set_chars = greedy_set_chars,
             is_greedy_case_insensitive = is_greedy_case_insensitive,
             suffix = suffix,
@@ -1568,3 +1636,101 @@ def optimize_matcher(instructions):
         )
 
     return None
+
+# buildifier: disable=list-append
+def compute_first_skip(instructions):
+    """Computes the characters that can never begin a match.
+
+    The VM uses this to skip, via a native lstrip(), over input positions where no
+    match can start. Zero-width assertions are treated as transparent, which can only
+    enlarge the set of possible first characters (a safe over-approximation).
+
+    Args:
+      instructions: The optimized bytecode.
+
+    Returns:
+      A string of characters that cannot begin a match, or None if the analysis does
+      not apply (the pattern can match the empty string, or starts with '.', a negated
+      or complex set, or a case-insensitive atom).
+    """
+    num_insts = len(instructions)
+    seen = {}
+    first = {}
+    stack = [0]
+    for _ in range(2 * num_insts + 2):
+        if not stack:
+            break
+        pc = stack.pop()
+        if pc in seen:
+            continue
+        if pc >= num_insts:
+            return None
+        seen[pc] = True
+        inst = instructions[pc]
+        op = inst[0]
+        if op == OP_JUMP:
+            stack += [inst[2]]
+        elif op == OP_SPLIT:
+            stack += [inst[2], inst[3]]
+        elif (op == OP_SAVE or op == OP_ANCHOR_START or op == OP_ANCHOR_END or
+              op == OP_ANCHOR_LINE_START or op == OP_ANCHOR_LINE_END or
+              op == OP_WORD_BOUNDARY or op == OP_NOT_WORD_BOUNDARY):
+            stack += [pc + 1]
+        elif op == OP_CHAR:
+            if inst[2]:
+                return None
+            first[inst[1]] = True
+        elif op == OP_STRING:
+            if inst[2]:
+                return None
+            first[inst[1][0]] = True
+        elif op == OP_SET:
+            set_struct, is_negated = inst[1]
+            if is_negated or inst[2] or not set_struct.is_simple:
+                return None
+            for c in set_struct.all_chars.elems():
+                first[c] = True
+        elif op == OP_GREEDY_LOOP or op == OP_UNGREEDY_LOOP:
+            if inst[3]:
+                return None
+            for c in inst[1].elems():
+                first[c] = True
+            stack += [inst[2]]  # The loop may match zero characters.
+        else:
+            # OP_MATCH (empty match possible), OP_ANY, OP_ANY_NO_NL, ...
+            return None
+    if stack:
+        return None
+    skip = "".join([c for c in _CHR_LOOKUP.elems() if c not in first])
+    return skip if skip else None
+
+def compute_visit_limit(instructions):
+    """Computes how many times the VM may reach one pc at one input position.
+
+    Twice is enough for most patterns (OP_UNGREEDY_LOOP exits on the first visit and
+    consumes on the second). A loop whose body can match empty (a marked back edge,
+    see _loop_back_mark) can start an iteration at the position where a thread
+    reached it. So a pc inside n such loops, one inside the other, can be reached
+    in n + 1 different states at one position: by a thread that got there by
+    consuming, and by one for each loop that started an iteration there. Each state
+    must get its visit. `(?:(?:|.)*)*a` matches "ca" in "caa" only if the inner
+    loop's back edge is reached three times at 1: after "c", after the inner loop's
+    empty second iteration, and after its empty first iteration in the outer loop's
+    second iteration.
+
+    Args:
+      instructions: The optimized bytecode.
+
+    Returns:
+      2, or one more than the deepest nesting of loops whose body can match empty.
+    """
+    marked = [j for j, inst in enumerate(instructions) if inst[0] == OP_SPLIT and inst[1] != None]
+    if len(marked) < 2:
+        return 2
+    depth = [0] * len(instructions)
+    for j in marked:
+        inst = instructions[j]
+        for k in range(inst[2] if inst[2] < inst[3] else inst[3], j + 1):
+            depth[k] += 1
+    deepest = max(depth)
+    return deepest + 1 if deepest > 1 else 2

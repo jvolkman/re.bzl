@@ -1,10 +1,10 @@
 """
-Tests for the high-level API functions: findall, sub, split.
+Tests for the high-level API functions: findall, finditer, sub, split.
 """
 
 load("@rules_testing//lib:unit_test.bzl", "unit_test")
-load("//re:re.bzl", "compile", "findall", "fullmatch", "match", "search", "split", "sub")
-load("//re/tests:utils.bzl", "assert_eq")
+load("//re:re.bzl", "IGNORECASE", "compile", "findall", "finditer", "fullmatch", "match", "search", "split", "sub")
+load("//re/tests:utils.bzl", "assert_eq", "assert_span")
 
 def _test_api(env):
     run_tests_api(env)
@@ -14,6 +14,9 @@ def api_test(name):
         name = name,
         impl = _test_api,
     )
+
+def _bracket_group1(m):
+    return "[" + m.group(1) + "]"
 
 def run_tests_api(env):
     """Runs API tests.
@@ -32,6 +35,14 @@ def run_tests_api(env):
     # 2. findall
     assert_eq(env, findall("a+", "aa aba a"), ["aa", "a", "a", "a"], "findall simple")
     assert_eq(env, findall(r"(\w+)=(\d+)", "a=1 b=2"), [("a", "1"), ("b", "2")], "findall with groups")
+
+    # Result shape follows Python: one group gives strings, unmatched groups give "".
+    assert_eq(env, findall(r"(\w+)=\d+", "a=1 b=2"), ["a", "b"], "findall with one group")
+    assert_eq(env, findall(r"(?:1|2)+", "12 21"), ["12", "21"], "findall non-capturing group")
+    assert_eq(env, findall("(a)|b", "ab"), ["a", ""], "findall unmatched single group")
+    assert_eq(env, findall("a(b)?", "aab"), ["", "b"], "findall optional single group")
+    assert_eq(env, findall("(a)|(b)", "ab"), [("a", ""), ("", "b")], "findall unmatched groups in tuples")
+    assert_eq(env, findall(r"(?P<k>\w)=(?P<v>\d)?", "a=1 b="), [("a", "1"), ("b", "")], "findall named groups")
 
     # 3. sub
     assert_eq(env, sub("a+", "b", "aaabaa"), "bbb", "sub simple")
@@ -170,6 +181,43 @@ def run_tests_api(env):
     assert_eq(env, bool(search("abc$", "xabcy", endpos = 4)), True, "endpos works with $ anchor")
     assert_eq(env, bool(match(r"abc\b", "abc.def", endpos = 3)), True, "endpos works with \b boundary")
 
+    # A greedy loop stops at endpos, even where its run of characters continues.
+    assert_span(env, compile("(x)a*$").search("xaaaa", 0, 3), (0, 3), "greedy loop stops at endpos")
+    assert_span(env, compile("(x)[ab]*$").fullmatch("xabab", 0, 3), (0, 3), "greedy set loop stops at endpos")
+    assert_span(env, compile("(x)(?i:a*)$").search("xAAAA", 0, 3), (0, 3), "case-insensitive greedy loop stops at endpos")
+    assert_span(env, compile("(x)(?i:a*)$").match("xAAAA", 0, 3), (0, 3), "case-insensitive greedy loop stops at endpos (match)")
+
+    # pos and endpos are clamped to the string, like Python.
+    m_clamped = compile("(a)").search("xa", -5, 10)
+    assert_span(env, m_clamped, (1, 2), "search clamps pos and endpos")
+    assert_eq(env, (m_clamped.pos, m_clamped.endpos) if m_clamped else None, (0, 2), "match reports the clamped pos and endpos")
+    assert_span(env, compile("(a)").fullmatch("a", 0, 5), (0, 1), "fullmatch clamps endpos")
+    assert_span(env, compile("").match("abc", 5), (3, 3), "match clamps pos")
+    assert_span(env, compile("a").search("xa", 0, -1), None, "search clamps a negative endpos")
+
+    # match() and fullmatch() reject a character that cannot begin a match before any
+    # other work. The result must still be Python's at every pos.
+    prog_plus = compile("a+")
+    assert_span(env, prog_plus.match("xa"), None, "compiled match rejects a character that cannot begin a match")
+    assert_span(env, prog_plus.match("xa", 1), (1, 2), "compiled match after a rejected character")
+    assert_span(env, prog_plus.match("aa", 2), None, "compiled match at the end of the string")
+    assert_span(env, prog_plus.match("aa", 5), None, "compiled match past the end of the string")
+    assert_span(env, prog_plus.match("ab", -1), (0, 1), "compiled match clamps a negative pos")
+    assert_span(env, prog_plus.match("xa", 1, 1), None, "compiled match with endpos at pos")
+    assert_span(env, prog_plus.match("xa", 0, 2), None, "compiled match with endpos rejects a character that cannot begin a match")
+    assert_span(env, prog_plus.match("xaa", 1, 2), (1, 2), "compiled match with endpos after a rejected character")
+    assert_span(env, prog_plus.fullmatch("xaa"), None, "compiled fullmatch rejects a character that cannot begin a match")
+    assert_span(env, prog_plus.fullmatch("xaa", 1), (1, 3), "compiled fullmatch after a rejected character")
+    assert_span(env, prog_plus.fullmatch("aa", 2), None, "compiled fullmatch at the end of the string")
+    assert_span(env, prog_plus.fullmatch("aa", -1), (0, 2), "compiled fullmatch clamps a negative pos")
+    assert_span(env, match(prog_plus, "xa"), None, "match rejects a character that cannot begin a match")
+    assert_span(env, match("a+", "xa", pos = 1), (1, 2), "match after a rejected character")
+    assert_span(env, match(prog_plus, "aa", pos = 5), None, "match past the end of the string")
+    assert_span(env, match(prog_plus, "ab", pos = -1), (0, 1), "match clamps a negative pos")
+    assert_span(env, fullmatch(prog_plus, "xaa", pos = 1), (1, 3), "fullmatch after a rejected character")
+    assert_span(env, fullmatch(prog_plus, "aa", pos = 2), None, "fullmatch at the end of the string")
+    assert_span(env, fullmatch("a+", "aa", pos = -1), (0, 2), "fullmatch clamps a negative pos")
+
     # 15. groupdict()
     m_dict = search(r"(?P<first>a)(?P<second>b)", "ab")
     assert_eq(env, m_dict.groupdict(), {"first": "a", "second": "b"}, "groupdict returns correct dict")
@@ -180,3 +228,80 @@ def run_tests_api(env):
 
     m_no_named = search(r"(a)(b)", "ab")
     assert_eq(env, m_no_named.groupdict(), {}, "groupdict returns empty dict if no named groups")
+
+    # 16. fullmatch keeps exploring until a match ends at the end of the string
+    assert_span(env, fullmatch("a|ab", "ab"), (0, 2), "fullmatch tries later alternatives")
+    assert_span(env, fullmatch(r"\w+?", "abc"), (0, 3), "fullmatch extends lazy loops")
+    assert_span(env, fullmatch("a+?", "aa"), (0, 2), "fullmatch extends lazy char loops")
+    assert_span(env, fullmatch("(?:a|ab)(?:c|bcd)", "abcd"), (0, 4), "fullmatch backtracks into alternation")
+    assert_span(env, fullmatch("a|ab", "abc"), None, "fullmatch still rejects partial matches")
+    assert_span(env, compile("a|ab").fullmatch("abc", endpos = 2), (0, 2), "fullmatch respects endpos")
+    m_fm = fullmatch("(a|ab)(c|bcd)?", "abcd")
+    assert_eq(env, m_fm.groups() if m_fm else None, ("a", "bcd"), "fullmatch groups from the full-length path")
+    m_fm = fullmatch(r"(a+?)(a*?)", "aaa")
+    assert_eq(env, m_fm.groups() if m_fm else None, ("a", "aa"), "fullmatch groups with lazy loops")
+
+    # 17. Empty matches (Python 3.7+): a non-empty match may start where the previous
+    # empty match ended, and an empty match is never repeated at the same position.
+    assert_eq(env, findall("c??", "ca-"), ["", "c", "", "", ""], "findall lazy empty then non-empty")
+    assert_eq(env, findall(r"\b|\w+", "ab"), ["", "ab", ""], "findall empty alternative first")
+    assert_eq(env, findall("|a", "aa"), ["", "a", "", "a", ""], "findall empty branch first")
+    assert_eq(env, findall("a|", "aa"), ["a", "a", ""], "findall empty match after non-empty")
+    assert_eq(env, findall("x*", "abxd"), ["", "", "x", "", ""], "findall x*")
+    assert_eq(env, findall(r"\d*?", "1a"), ["", "1", "", ""], "findall lazy loop")
+    assert_eq(env, findall("(?m)^|x", "x\nx"), ["", "x", "", "x"], "findall (?m)^|x")
+    assert_eq(env, findall("(?i)A|", "aA"), ["a", "A", ""], "findall case-insensitive")
+    assert_eq(env, findall("", ""), [""], "findall empty pattern on empty text")
+    assert_eq(env, findall("", "ab"), ["", "", ""], "findall empty pattern")
+    assert_eq(env, findall("^a*", "b"), [""], "findall ^a* matches empty once")
+    assert_eq(env, findall("^a*?", "ab"), ["", "a"], "findall ^a*? extends after the empty match")
+    assert_eq(env, findall("^(?:|a)", "ab"), ["", "a"], "findall ^(?:|a)")
+    assert_eq(env, findall("a*$", "baa"), ["aa", ""], "findall a*$")
+
+    assert_eq(env, sub("x*", "-", "abxd"), "-a-b--d-", "sub x*")
+    assert_eq(env, sub("", "-", "ab"), "-a-b-", "sub empty pattern")
+    assert_eq(env, sub(r"\b|\w+", "-", "ab cd"), "--- ---", "sub empty alternative first")
+    assert_eq(env, sub("a*?", "-", "baac"), "-b-----c-", "sub lazy loop")
+    assert_eq(env, sub("x*", "-", "abxd", count = 2), "-a-bxd", "sub x* with count")
+    assert_eq(env, sub(r"^\s*", "", "ab"), "ab", "sub ^\\s* without leading space")
+    assert_eq(env, sub(r"^\s*", "", "  ab"), "ab", "sub ^\\s* with leading space")
+
+    assert_eq(env, split(r"\W*", "...words..."), ["", "", "w", "o", "r", "d", "s", "", ""], "split \\W*")
+    assert_eq(env, split(r"(\W*)", "...words..."), ["", "...", "", "", "w", "", "o", "", "r", "", "d", "", "s", "...", "", "", ""], "split (\\W*)")
+    assert_eq(env, split(r"\b", "a b"), ["", "a", " ", "b", ""], "split \\b")
+    assert_eq(env, split("x*", "axbc"), ["", "a", "", "b", "c", ""], "split x*")
+    assert_eq(env, split("x*", "axbc", maxsplit = 2), ["", "a", "bc"], "split x* with maxsplit")
+    assert_eq(env, split("(?i)a*?", "bAc"), ["", "b", "", "", "c", ""], "split case-insensitive lazy loop")
+    assert_eq(env, split("(a)|b*", "cabd"), ["", None, "c", "a", "", None, "", None, "d", None, ""], "split keeps None for unmatched groups")
+    assert_eq(env, split("", "ab"), ["", "a", "b", ""], "split empty pattern")
+
+    # 18. sub() with a replacement function
+    assert_eq(env, sub(r"(\d)", _bracket_group1, "a1b2"), "a[1]b[2]", "sub with a def replacement")
+    assert_eq(env, sub(r"\w+", lambda m: m.group(0).upper(), "ab cd"), "AB CD", "sub with a lambda replacement")
+    assert_eq(env, sub("(a)|b", lambda m: m.group(1) or "-", "ab"), "a-", "sub replacement sees unmatched groups as None")
+    assert_eq(env, sub("x*", lambda m: "<" + m.group(0) + ">", "axxb"), "<>a<xx><>b<>", "sub replacement with empty matches")
+    assert_eq(env, sub("b", lambda m: "%d,%d" % (m.pos, m.endpos), "abcb"), "a0,4c0,4", "sub replacement match pos/endpos")
+
+    # 19. finditer(): a MatchObject per match, keeping None for unmatched groups
+    assert_eq(env, [m.group() for m in finditer(r"\d+", "a1b22c333")], ["1", "22", "333"], "finditer matches")
+    assert_eq(env, [m.span() for m in finditer(r"\d+", "a1b22c333")], [(1, 2), (3, 5), (6, 9)], "finditer spans")
+    assert_eq(env, [m.groups() for m in finditer("(a)|(b)", "ab")], [("a", None), (None, "b")], "finditer keeps None for unmatched groups")
+    assert_eq(env, [m.span(1) for m in finditer("a(b)?", "aab")], [(-1, -1), (2, 3)], "finditer group spans")
+    assert_eq(env, [m.groupdict() for m in finditer(r"(?P<k>\w)=(?P<v>\d)?", "a=1 b=")], [{"k": "a", "v": "1"}, {"k": "b", "v": None}], "finditer groupdict")
+    assert_eq(env, [m.lastgroup for m in finditer("(?P<x>a)|(?P<y>b)", "ab")], ["x", "y"], "finditer lastgroup")
+    assert_eq(env, [m.span() for m in finditer("x*", "abxd")], [(0, 0), (1, 1), (2, 3), (3, 3), (4, 4)], "finditer empty matches")
+    assert_eq(env, [m.span() for m in finditer("c??", "ca-")], [(0, 0), (0, 1), (1, 1), (2, 2), (3, 3)], "finditer non-empty match after an empty match")
+    assert_eq(env, [(m.pos, m.endpos, m.string) for m in finditer("b", "abcb")], [(0, 4, "abcb"), (0, 4, "abcb")], "finditer match pos/endpos/string")
+    assert_eq(env, [m.re.pattern for m in finditer("a", "aa")], ["a", "a"], "finditer match re")
+    assert_eq(env, finditer("x", "abc"), [], "finditer without matches")
+    assert_eq(env, [m.group() for m in finditer("a", "aAb", flags = IGNORECASE)], ["a", "A"], "finditer with flags")
+    assert_eq(env, [m.group() for m in finditer(compile("(?i)a"), "aAb")], ["a", "A"], "finditer with a compiled pattern")
+
+    # 20. A MatchObject's re can be passed back in as a pattern
+    for r in [search("(a)", "xa").re, match("(a)", "a").re, fullmatch("(a)", "a").re]:
+        assert_eq(env, search(r, "ya").span(1), (1, 2), "search with m.re")
+        assert_eq(env, match(r, "ab").span(1), (0, 1), "match with m.re")
+        assert_eq(env, fullmatch(r, "a").span(1), (0, 1), "fullmatch with m.re")
+        assert_eq(env, findall(r, "aba"), ["a", "a"], "findall with m.re")
+    r = search("(?:(?:(?:b*|aa)*)*)*.", "baax").re
+    assert_eq(env, match(r, "baax").span(), (0, 2), "m.re keeps the visit limit")

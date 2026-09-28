@@ -3,7 +3,7 @@ Public API for the Starlark regex engine.
 """
 
 load("//re/private:constants.bzl", _DOTALL = "DOTALL", _I = "I", _IGNORECASE = "IGNORECASE", _M = "M", _MULTILINE = "MULTILINE", _S = "S", _U = "U", _UNGREEDY = "UNGREEDY", _UNICODE = "UNICODE", _VERBOSE = "VERBOSE", _X = "X")
-load("//re/private:re.bzl", _compile = "compile", _findall = "findall", _fullmatch = "fullmatch", _match = "match", _search = "search", _split = "split", _sub = "sub")
+load("//re/private:re.bzl", _compile = "compile", _findall = "findall", _finditer = "finditer", _fullmatch = "fullmatch", _match = "match", _search = "search", _split = "split", _sub = "sub")
 
 # Re-export flags
 I = _I  # buildifier: disable=confusing-name
@@ -21,6 +21,7 @@ UNGREEDY = _UNGREEDY
 # Export functions
 compile = _compile
 findall = _findall
+finditer = _finditer
 fullmatch = _fullmatch
 match = _match
 search = _search

@@ -17,6 +17,7 @@ load(
     _X = "X",
     _compile = "compile",
     _findall = "findall",
+    _finditer = "finditer",
     _fullmatch = "fullmatch",
     _match = "match",
     _search = "search",
@@ -28,6 +29,7 @@ load(
 re = struct(
     compile = _compile,
     findall = _findall,
+    finditer = _finditer,
     fullmatch = _fullmatch,
     match = _match,
     search = _search,

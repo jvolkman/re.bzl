@@ -34,6 +34,17 @@ def assert_eq(env, actual, expected, msg):
     if actual != expected:
         env.fail(msg + "\nExpected: %s\nActual: %s" % (expected, actual))
 
+def assert_span(env, m, expected, msg):
+    """Asserts that a match object has the expected span.
+
+    Args:
+      env: The test environment.
+      m: The match object, or None.
+      expected: The expected (start, end) tuple, or None if no match is expected.
+      msg: The message to display on failure.
+    """
+    assert_eq(env, m.span() if m != None else None, expected, msg)
+
 def run_suite(env, name, cases, flags = 0):
     """Runs a suite of regex tests.
 
@@ -55,7 +66,7 @@ def run_suite(env, name, cases, flags = 0):
             if res != None:
                 env.fail("Suite '%s' - Pattern: '%s', Text: '%s' expected None, got match '%s'" % (name, pattern, text, res.group(0)))
         elif res == None:
-            env.fail("Suite '%s' - Pattern: '%s', Text: '%s' expected match, got None" % (name, pattern, text, res.group(0)))
+            env.fail("Suite '%s' - Pattern: '%s', Text: '%s' expected match, got None" % (name, pattern, text))
         else:
             for k, v in expected.items():
                 val = res.group(k)

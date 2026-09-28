@@ -4,7 +4,7 @@ Tests for regex flags.
 
 load("@rules_testing//lib:unit_test.bzl", "unit_test")
 load("//:re.bzl", "re")
-load("//re/tests:utils.bzl", "run_suite")
+load("//re/tests:utils.bzl", "assert_span", "run_suite")
 
 def _test_flags(env):
     # 1. Inline Flags
@@ -84,6 +84,35 @@ def _test_flags(env):
         ("abc", "abc", {0: "abc"}, re.UNICODE),
     ]
     run_suite(env, "API Flags", api_cases)
+
+    # 3. Case-insensitive match()/fullmatch() (characters are lowered on demand)
+    assert_span(env, re.compile("(?i)true|false").match("x TRUE", 2), (2, 6), "CI string at pos")
+    assert_span(env, re.compile("(?i)[a-c]+d").match("ABCD"), (0, 4), "CI greedy set loop")
+    assert_span(env, re.compile("(?i)a[b-d]*?e").match("ABCDE"), (0, 5), "CI lazy set loop")
+    assert_span(env, re.compile("(?i)x[a-c]*y|z").match("XaBcY"), (0, 5), "CI loop in alternation")
+    assert_span(env, re.compile(r"(?i)\bnull\b").match("NULL,"), (0, 4), "CI string with word boundaries")
+    assert_span(env, re.compile("(?i)ab").fullmatch("xAB", 1), (1, 3), "CI fullmatch at pos")
+    assert_span(env, re.compile("(?i)abc|x").match("ABCD", 0, 2), None, "CI string past endpos")
+
+    # 4. fullmatch() with scoped flags: only the scoped part is case-insensitive
+    assert_span(env, re.fullmatch("(?i:x)[a-z]+", "xAB"), None, "CS loop after CI prefix")
+    assert_span(env, re.fullmatch("(?i:x)[a-z]+", "Xab"), (0, 3), "CI prefix before CS loop")
+    assert_span(env, re.fullmatch("(?i)x(?-i:[a-z]+)", "xAB"), None, "CS loop after (?-i:")
+    assert_span(env, re.fullmatch("(?i:x)[a-z]*C", "xabc"), None, "CS suffix after CI prefix")
+    assert_span(env, re.fullmatch("(?i:x)[a-c]", "xA"), None, "CS set after CI prefix")
+    assert_span(env, re.fullmatch("x(?i:[a-c]*)", "xAbC"), (0, 4), "CI loop after CS prefix")
+    assert_span(env, re.fullmatch("(?i)x[a-c]+", "XABC"), (0, 4), "all CI")
+    assert_span(env, re.fullmatch("(?i)ab[0-9]*CD", "AB12cd"), (0, 6), "all CI with suffix")
+
+    # 5. Literal runs that mix case-sensitive and case-insensitive characters
+    assert_span(env, re.match("aA(?i:bx)", "ax"), None, "mixed prefix, no match")
+    assert_span(env, re.match("aA(?i:bx)", "aABX"), (0, 4), "mixed prefix")
+    assert_span(env, re.match("(?i:1)Ab$", ""), None, "mixed prefix on empty input")
+    assert_span(env, re.search("(?i)^(?-i:Ab)X", "CcB x"), None, "anchored mixed prefix, no match")
+    assert_span(env, re.search("(?i)^(?-i:Ab)X", "Abx"), (0, 3), "anchored mixed prefix")
+    assert_span(env, re.compile("(?i:A)b1").fullmatch("1", 1), None, "mixed prefix fullmatch at pos")
+    assert_span(env, re.fullmatch("(?i)x[ab]*?(?-i:A)", "xa"), None, "mixed suffix, no match")
+    assert_span(env, re.search("(?i)x[ab]*?(?-i:A)", "zXbA"), (1, 4), "mixed suffix")
 
 def flags_test(name):
     unit_test(

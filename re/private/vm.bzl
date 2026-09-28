@@ -23,39 +23,57 @@ load(
     "ORD_LOOKUP",
 )
 
-# Default window size for windowed string operations.
-# Windowing avoids creating massive intermediate string slices, which can
-# lead to O(N^2) memory and time behavior in Starlark for large inputs.
-_WINDOW_SIZE = 65536
+# Windowed strips copy the input one window at a time instead of s[start:],
+# which would cost O(len(s)) per call, and O(N^2) over a scan of a large input.
+# Windows start small, since most runs are short (the unanchored search
+# prefilter strips once per match), and grow 4x per step up to
+# _MAX_WINDOW_SIZE, so that long runs take few steps.
+_MIN_WINDOW_SIZE = 64
+_MAX_WINDOW_SIZE = 65536
 
-def _windowed_lstrip(s, chars, start):
-    """Lstrips chars from s[start:] using windowing to avoid large copies."""
-    n = len(s)
+def _windowed_lstrip(s, chars, start, end = None, lower = False):
+    """Lstrips chars from s[start:end] using windowing to avoid large copies.
+
+    If lower is True, each window is lowercased before stripping.
+    """
+    if end == None:
+        end = len(s)
     pos = start
-    for _ in range(n // _WINDOW_SIZE + 1):
-        window = s[pos:pos + _WINDOW_SIZE]
+    size = _MIN_WINDOW_SIZE
+    for _ in range(end // _MIN_WINDOW_SIZE + 2):
+        stop = pos + size
+        if stop > end:
+            stop = end
+        window = s[pos:stop]
+        if lower:
+            window = window.lower()
         if not window:
             break
         stripped = window.lstrip(chars)
-        match_len = len(window) - len(stripped)
-        pos += match_len
-        if len(stripped) > 0:
+        pos += len(window) - len(stripped)
+        if stripped:
             break
+        if size < _MAX_WINDOW_SIZE:
+            size *= 4
     return pos - start
 
 def _windowed_rstrip(s, chars, end):
     """Rstrips chars from s[:end] using windowing to avoid large copies."""
     pos = end
-    for _ in range(end // _WINDOW_SIZE + 1):
-        start = max(0, pos - _WINDOW_SIZE)
+    size = _MIN_WINDOW_SIZE
+    for _ in range(end // _MIN_WINDOW_SIZE + 2):
+        start = pos - size
+        if start < 0:
+            start = 0
         window = s[start:pos]
         if not window:
             break
         stripped = window.rstrip(chars)
-        match_len = len(window) - len(stripped)
-        pos -= match_len
-        if len(stripped) > 0:
+        pos -= len(window) - len(stripped)
+        if stripped:
             break
+        if size < _MAX_WINDOW_SIZE:
+            size *= 4
     return end - pos
 
 # Types
@@ -93,7 +111,7 @@ def _char_in_set(set_struct, c):
 
 # buildifier: disable=list-append
 # buildifier: disable=function-docstring-args
-def _get_epsilon_closure(instructions, input_str, input_len, start_pc, start_regs, current_idx, visited, visited_gen, loop_cache, input_lower = None, word_mask = None):
+def _get_epsilon_closure(instructions, input_str, input_len, start_pc, start_regs, current_idx, visited, visited_gen, visited_last, loop_cache, input_lower = None, word_mask = None):
     reachable = []
     num_inst = len(instructions)
 
@@ -102,10 +120,10 @@ def _get_epsilon_closure(instructions, input_str, input_len, start_pc, start_reg
 
     # Outer loop handles exploration from stack.
     # Inner loop follows single-thread transitions.
-    limit = num_inst * 2 + 100
-
-    # We use a large enough number for the inner loop to cover any possible epsilon chain (max instructions).
-    inner_limit = num_inst + 10
+    # Each pc is reached at most (visited_last - visited_gen + 1) times at this
+    # position (see compute_visit_limit), which bounds both the number of threads
+    # and the length of any epsilon chain.
+    limit = num_inst * (visited_last - visited_gen + 1) + 100
 
     for _ in range(limit):
         if not stack:
@@ -113,13 +131,15 @@ def _get_epsilon_closure(instructions, input_str, input_len, start_pc, start_reg
         pc, regs = stack.pop()
 
         # Inner loop to follow a thread's epsilon transitions.
-        for _ in range(inner_limit):
+        for _ in range(limit):
             if visited[pc] < visited_gen:
                 visited[pc] = visited_gen
-            elif visited[pc] == visited_gen:
-                visited[pc] = visited_gen + 1
+            elif visited[pc] < visited_last:
+                visited[pc] += 1
             else:
-                continue
+                # PC already fully explored in this generation; drop this thread.
+                # (`continue` here would spin on the same pc for inner_limit iterations.)
+                break
 
             if pc >= num_inst:
                 break
@@ -136,11 +156,20 @@ def _get_epsilon_closure(instructions, input_str, input_len, start_pc, start_reg
                 pc1 = inst[2]  # arg1
                 pc2 = inst[3]  # arg2
 
-                # Push lower priority (pc2) first so we follow pc1 (higher priority) immediately
-                # DFS order matters for priority
-                stack += [(pc2, regs)]
-                pc = pc1
-                # Continue loop to process pc1
+                if inst[1] != None and visited[pc1 if pc1 < pc2 else pc2] >= visited_gen:
+                    # The back edge of a loop whose body can match empty (see
+                    # _loop_back_mark), and its loop branch (the smaller target) was
+                    # already reached at this position: the iteration that just ended
+                    # matched nothing, or a thread with higher priority already started
+                    # an iteration here. Either way, don't start another one; exit.
+                    pc = pc2 if pc1 < pc2 else pc1
+                else:
+                    # Push lower priority (pc2) first so we follow pc1 (higher priority) immediately
+                    # DFS order matters for priority
+                    stack += [(pc2, regs)]
+                    pc = pc1
+
+                # Continue loop to process pc
 
             elif itype == OP_SAVE:
                 group_idx = inst[2]  # arg1 = slot
@@ -195,12 +224,12 @@ def _get_epsilon_closure(instructions, input_str, input_len, start_pc, start_reg
                 if last_end >= current_idx:
                     match_len = last_end - current_idx
                 else:
-                    # Compute and cache
-                    input_to_strip = input_str
+                    # Compute and cache. The run stops at input_len (endpos): the loop
+                    # only exits once it has consumed the whole run.
                     if is_ci and input_lower != None:
-                        input_to_strip = input_lower
-
-                    match_len = _windowed_lstrip(input_to_strip, chars, current_idx)
+                        match_len = _windowed_lstrip(input_lower, chars, current_idx, input_len)
+                    else:
+                        match_len = _windowed_lstrip(input_str, chars, current_idx, input_len, lower = is_ci)
                     loop_cache[pc] = current_idx + match_len
 
                 if match_len == 0:
@@ -219,7 +248,7 @@ def _get_epsilon_closure(instructions, input_str, input_len, start_pc, start_reg
                     stack += [(pc, regs)]  # Push to stack for second visit (low priority)
                     pc = inst[2]  # arg1 = exit_pc
                 else:
-                    # Second visit (visited[pc] == visited_gen + 1):
+                    # Second visit (visited[pc] > visited_gen; any later one only repeats it):
                     # Consuming path (low priority)
                     # Use cache to check if we can consume
                     chars = inst[1]  # val
@@ -231,11 +260,10 @@ def _get_epsilon_closure(instructions, input_str, input_len, start_pc, start_reg
                         match_len = last_end - current_idx
                     else:
                         # Compute and cache
-                        input_to_strip = input_str
                         if is_ci and input_lower != None:
-                            input_to_strip = input_lower
-
-                        match_len = _windowed_lstrip(input_to_strip, chars, current_idx)
+                            match_len = _windowed_lstrip(input_lower, chars, current_idx, input_len)
+                        else:
+                            match_len = _windowed_lstrip(input_str, chars, current_idx, input_len, lower = is_ci)
                         loop_cache[pc] = current_idx + match_len
 
                     if match_len > 0:
@@ -251,7 +279,7 @@ def _get_epsilon_closure(instructions, input_str, input_len, start_pc, start_reg
     return reachable
 
 # buildifier: disable=list-append
-def _process_batch(instructions, batch, input_str, current_idx, input_len, input_lower):
+def _process_batch(instructions, batch, input_str, current_idx, input_len, input_lower, require_end = False, lower_on_demand = False, forbid_empty_at = -1):
     """Processes a batch of threads against the current character.
 
     batch is a list of (pc, regs, skip_idx) in priority order (index 0 is highest).
@@ -263,16 +291,26 @@ def _process_batch(instructions, batch, input_str, current_idx, input_len, input
     matched_priority_index = -1
 
     char = input_str[current_idx] if current_idx < input_len else None
-    char_lower = input_lower[current_idx] if input_lower != None and current_idx < input_len else None
+    char_lower = None
+    if char != None:
+        if input_lower != None:
+            char_lower = input_lower[current_idx]
+        elif lower_on_demand:
+            char_lower = char.lower()
 
     # Process in priority order (0 = highest)
+    next_idx = current_idx + 1
     for i in range(len(batch)):
         pc, regs, skip_idx = batch[i]
         if skip_idx > current_idx:
             # Still skipping due to previous OP_STRING match.
             # Just pass it along while maintaining priority.
-            if pc not in next_threads_dict:
-                next_threads_dict[pc] = True
+            # A thread is its pc and the index it resumes at: it only duplicates a
+            # thread that resumes at the same index. Single-character steps resume at
+            # next_idx and are keyed by the pc alone, others by (pc, index).
+            key = pc if skip_idx == next_idx else (pc, skip_idx)
+            if key not in next_threads_dict:
+                next_threads_dict[key] = True
                 next_threads_list += [(pc, regs, skip_idx)]
             continue
 
@@ -280,6 +318,14 @@ def _process_batch(instructions, batch, input_str, current_idx, input_len, input
         itype = inst[0]
 
         if itype == OP_MATCH:
+            if require_end and current_idx != input_len:
+                # fullmatch(): a match that ends early is a dead thread, not a result.
+                continue
+            if current_idx == forbid_empty_at:
+                # execute(must_advance = True) passes its start_index. Only threads
+                # seeded there exist yet, so this match is empty. It is a dead thread,
+                # not a result: lower-priority threads may still match non-empty.
+                continue
             if best_match_regs == None:
                 best_match_regs = regs
                 matched_priority_index = i
@@ -300,20 +346,21 @@ def _process_batch(instructions, batch, input_str, current_idx, input_len, input
             s = inst[1]  # val
             if inst[2]:  # arg1 = is_ci
                 if input_lower != None:
-                    if input_lower.startswith(s, current_idx):
-                        match_len = len(s)
-                        next_pc = pc + 1
-                        if next_pc not in next_threads_dict:
-                            next_threads_dict[next_pc] = True
-                            next_threads_list += [(next_pc, regs, current_idx + match_len)]
-                        continue
-            elif input_str.startswith(s, current_idx):
-                match_len = len(s)
-                next_pc = pc + 1
-                if next_pc not in next_threads_dict:
-                    next_threads_dict[next_pc] = True
-                    next_threads_list += [(next_pc, regs, current_idx + match_len)]
-                continue
+                    match_found = input_lower.startswith(s, current_idx)
+                elif lower_on_demand:
+                    match_found = input_str[current_idx:current_idx + len(s)].lower() == s
+            else:
+                match_found = input_str.startswith(s, current_idx)
+            if match_found:
+                resume_idx = current_idx + len(s)
+                if resume_idx <= input_len:  # The string must end by endpos.
+                    # An OP_STRING has at least two characters, so it never resumes at
+                    # next_idx: its threads are keyed by (pc, index).
+                    key = (pc + 1, resume_idx)
+                    if key not in next_threads_dict:
+                        next_threads_dict[key] = True
+                        next_threads_list += [(pc + 1, regs, resume_idx)]
+            continue
         elif itype == OP_ANY:
             match_found = True
         elif itype == OP_ANY_NO_NL:
@@ -341,12 +388,12 @@ def _process_batch(instructions, batch, input_str, current_idx, input_len, input
 
             if next_pc not in next_threads_dict:
                 next_threads_dict[next_pc] = True
-                next_threads_list += [(next_pc, regs, current_idx + 1)]
+                next_threads_list += [(next_pc, regs, next_idx)]
 
     return next_threads_list, best_match_regs, matched_priority_index
 
 # buildifier: disable=list-append
-def execute(instructions, input_str, num_regs, start_index = 0, end_index = None, initial_regs = None, anchored = False, has_case_insensitive = False, input_lower = None, word_mask = None):
+def execute(instructions, input_str, num_regs, start_index = 0, end_index = None, initial_regs = None, anchored = False, has_case_insensitive = False, input_lower = None, word_mask = None, require_end = False, first_skip = None, must_advance = False, visit_limit = 2):
     """Executes the bytecode on the input string.
 
     Args:
@@ -360,6 +407,13 @@ def execute(instructions, input_str, num_regs, start_index = 0, end_index = None
       has_case_insensitive: Whether the match is case insensitive.
       input_lower: Pre-calculated lowercase input string.
       word_mask: Pre-calculated word character mask.
+      require_end: If True, only matches that end at end_index count (fullmatch).
+      first_skip: Optional string of characters that can never begin a match.
+      must_advance: If True, an empty match at start_index does not count, but a
+        non-empty match starting there does (Python 3.7+ findall/sub/split after
+        an empty match).
+      visit_limit: How many times the VM may reach a pc at one position (see
+        compute_visit_limit).
 
     Returns:
       A list of registers (start/end indices) or None.
@@ -369,29 +423,46 @@ def execute(instructions, input_str, num_regs, start_index = 0, end_index = None
 
     input_original_len = len(input_str)
     input_len = input_original_len if end_index == None else end_index
+    lower_on_demand = False
     if input_lower == None and has_case_insensitive:
-        input_lower = input_str.lower()
+        if anchored:
+            # match()/fullmatch() usually inspect a handful of characters; lowering the
+            # whole input on every call would cost O(len(input)).
+            lower_on_demand = True
+        else:
+            input_lower = input_str.lower()
 
-    # Pre-calculate word mask for boundary checks
-    if word_mask == None:
-        has_boundary = False
-        for inst in instructions:
-            if inst[0] == OP_WORD_BOUNDARY or inst[0] == OP_NOT_WORD_BOUNDARY:
-                has_boundary = True
-                break
-        if has_boundary:
-            word_mask = [c in _WORD_CHARS for c in input_str.elems()]
+    # Word boundaries are checked lazily (O(1) per check) in _get_epsilon_closure.
+    # Precomputing a mask over the entire input here would cost O(len(input)) on
+    # every call, which dominates repeated match()/search() calls on large inputs.
 
     visited = [0] * len(instructions)
     visited_gen = 0
     loop_cache = {}
 
-    current_threads = [(0, initial_regs, 0)]
+    # Unanchored searches seed a start thread at every position below.
+    current_threads = [] if not anchored else [(0, initial_regs, 0)]
     best_match_regs = None
+    use_skip = first_skip != None and not anchored
+    forbid_empty_at = start_index if must_advance else -1
 
-    for char_idx in range(start_index, input_len + 1):
+    char_idx = start_index - 1
+    for _ in range(start_index, input_len + 1):
+        char_idx += 1
+        if char_idx > input_len:
+            break
+
+        if use_skip and not current_threads and best_match_regs == None:
+            # No live threads: jump to the next position where a match can begin.
+            skip = _windowed_lstrip(input_str, first_skip, char_idx)
+            if char_idx + skip >= input_len:
+                # No remaining position can begin a (non-empty) match.
+                break
+            char_idx += skip
+
         # Expand epsilon closure for current threads
-        visited_gen += 3
+        visited_gen += visit_limit + 1
+        visited_last = visited_gen + visit_limit - 1
         expanded_batch = []
 
         for s_pc, s_regs, s_skip in current_threads:
@@ -400,13 +471,15 @@ def execute(instructions, input_str, num_regs, start_index = 0, end_index = None
                 expanded_batch += [(s_pc, s_regs, s_skip)]
                 continue
 
-            closure = _get_epsilon_closure(instructions, input_str, input_len, s_pc, s_regs, char_idx, visited, visited_gen, loop_cache, input_lower = input_lower, word_mask = word_mask)
+            closure = _get_epsilon_closure(instructions, input_str, input_len, s_pc, s_regs, char_idx, visited, visited_gen, visited_last, loop_cache, input_lower = input_lower, word_mask = word_mask)
             for c_pc, c_regs in closure:
                 expanded_batch += [(c_pc, c_regs, char_idx)]
 
-        if not anchored and char_idx <= input_len:
-            if visited[0] < visited_gen + 2:
-                closure0 = _get_epsilon_closure(instructions, input_str, input_len, 0, initial_regs[:], char_idx, visited, visited_gen, loop_cache, input_lower = input_lower, word_mask = word_mask)
+        # Leftmost-first semantics: once a match has been found, a thread seeded at a
+        # later start position can never win, so stop seeding new start positions.
+        if not anchored and best_match_regs == None:
+            if visited[0] <= visited_last:
+                closure0 = _get_epsilon_closure(instructions, input_str, input_len, 0, initial_regs[:], char_idx, visited, visited_gen, visited_last, loop_cache, input_lower = input_lower, word_mask = word_mask)
                 for c_pc, c_regs in closure0:
                     expanded_batch += [(c_pc, c_regs, char_idx)]
 
@@ -425,6 +498,9 @@ def execute(instructions, input_str, num_regs, start_index = 0, end_index = None
                 char_idx,
                 input_len,
                 input_lower,
+                require_end,
+                lower_on_demand,
+                forbid_empty_at,
             )
 
         if batch_match:
@@ -444,6 +520,11 @@ def execute(instructions, input_str, num_regs, start_index = 0, end_index = None
                     return best_match_regs
 
         current_threads = next_threads
+
+        # All surviving threads have higher priority than the current best match. If none
+        # survive, nothing can improve on it.
+        if not current_threads and best_match_regs != None:
+            break
 
     return best_match_regs
 
@@ -548,7 +629,7 @@ def expand_replacement(repl, match_str, groups, named_groups = {}):
     template = parse_replacement_template(repl, named_groups)
     return expand_template(template, match_str, groups)
 
-def search_regs(bytecode, text, group_count, start_index = 0, end_index = None, has_case_insensitive = False, opt = None, input_lower = None, word_mask = None):
+def search_regs(bytecode, text, group_count, start_index = 0, end_index = None, has_case_insensitive = False, opt = None, input_lower = None, word_mask = None, first_skip = None, must_advance = False, visit_limit = 2):
     """Executes a search returning registers.
 
     The returned `regs` is a flat list of integers representing [start, end] pairs for each group.
@@ -568,6 +649,11 @@ def search_regs(bytecode, text, group_count, start_index = 0, end_index = None, 
       opt: Optimization data.
       input_lower: Pre-calculated lowercase input string.
       word_mask: Pre-calculated word character mask.
+      first_skip: Characters that can never begin a match (see compute_first_skip).
+      must_advance: If True, reject an empty match at start_index (the previous
+        findall/sub/split match was empty and ended there).
+      visit_limit: How many times the VM may reach a pc at one position (see
+        compute_visit_limit).
 
     Returns:
       List of registers (start/end indices) or None.
@@ -577,13 +663,30 @@ def search_regs(bytecode, text, group_count, start_index = 0, end_index = None, 
 
     effective_len = len(text) if end_index == None else end_index
 
-    # Fast path optimization
-    if opt:
-        if opt.is_anchored_start:
-            # If anchored at start, search is just match
-            return match_regs(bytecode, text, group_count, start_index = start_index, end_index = end_index, has_case_insensitive = has_case_insensitive, opt = opt, input_lower = input_lower, word_mask = word_mask)
+    if must_advance and opt and opt.is_anchored_start:
+        # `^` (without MULTILINE) only matches at index 0. After an empty match there,
+        # only a non-empty match at index 0 remains; avoid scanning the whole input.
+        if start_index > 0:
+            return None
+        return execute(bytecode, text, (group_count + 1) * 2, end_index = end_index, anchored = True, has_case_insensitive = has_case_insensitive, input_lower = input_lower, word_mask = word_mask, must_advance = True, visit_limit = visit_limit)
 
-        if opt.is_anchored_end and not has_case_insensitive:
+    # Fast path optimization. The fast paths below do not implement must_advance. It
+    # is only set after an empty match, which the patterns they handle can produce
+    # only at the end of the input, where the general engine is cheap.
+    if opt and not must_advance:
+        if opt.is_anchored_start:
+            # `^` (without MULTILINE) only matches at index 0, never at a later
+            # start position (e.g. the next findall/sub/split iteration).
+            if start_index > 0:
+                return None
+
+            # If anchored at start, search is just match
+            return match_regs(bytecode, text, group_count, start_index = start_index, end_index = end_index, has_case_insensitive = has_case_insensitive, opt = opt, input_lower = input_lower, word_mask = word_mask, visit_limit = visit_limit)
+
+        # Only `...prefix [set]* suffix$` and `...prefix [set]+ suffix$` are handled here.
+        # (`(?i:[ab])[ab]*` has equal sets but isn't `[ab]+`.)
+        prefix_set_is_plus = opt.prefix_set_chars != None and opt.prefix_set_chars == opt.greedy_set_chars and opt.is_prefix_set_case_insensitive == opt.is_greedy_case_insensitive
+        if opt.is_anchored_end and not has_case_insensitive and (opt.prefix_set_chars == None or prefix_set_is_plus):
             # Case: ...sets...suffix$
             if text.startswith(opt.suffix, effective_len - len(opt.suffix)):
                 # Work backwards from the suffix
@@ -598,17 +701,22 @@ def search_regs(bytecode, text, group_count, start_index = 0, end_index = None, 
                 # else: no greedy_set_chars
 
                 match_start = greedy_start
-                prefix_ok = True
+
+                # `[set]+` needs at least one character from the set.
+                prefix_ok = not prefix_set_is_plus or greedy_start < before_suffix_idx
 
                 # Check prefix literal
                 if prefix_ok:
-                    if text[:match_start].endswith(opt.prefix):
+                    if text.endswith(opt.prefix, 0, match_start):
                         match_start -= len(opt.prefix)
 
-                        regs = [-1] * ((group_count + 1) * 2 + 1)
-                        regs[0] = match_start
-                        regs[1] = effective_len
-                        return regs
+                        # A match starting before start_index (e.g. a later findall
+                        # iteration) is not a valid result; fall through.
+                        if match_start >= start_index:
+                            regs = [-1] * ((group_count + 1) * 2 + 1)
+                            regs[0] = match_start
+                            regs[1] = effective_len
+                            return regs
 
         # General case search optimization: skipping to prefix or suffix
         if opt.prefix != "":
@@ -626,7 +734,7 @@ def search_regs(bytecode, text, group_count, start_index = 0, end_index = None, 
                     break
 
                 # For unanchored search with prefix literal, simple skip:
-                regs = match_regs(bytecode, text, group_count, start_index = found_idx, end_index = end_index, has_case_insensitive = has_case_insensitive, opt = None, input_lower = input_lower, word_mask = word_mask)
+                regs = match_regs(bytecode, text, group_count, start_index = found_idx, end_index = end_index, has_case_insensitive = has_case_insensitive, opt = opt, input_lower = input_lower, word_mask = word_mask, visit_limit = visit_limit)
                 if regs:
                     return regs
 
@@ -634,7 +742,11 @@ def search_regs(bytecode, text, group_count, start_index = 0, end_index = None, 
                 start_off = found_idx + 1
                 if start_off > effective_len:
                     break
-        elif opt.suffix != "":
+        elif opt.suffix != "" and (opt.prefix_set_chars == None or opt.greedy_set_chars == None or prefix_set_is_plus):
+            # Backing up from the suffix over the loop finds the leftmost start, but in
+            # `[set1][set2]*suffix` the set1 character can be inside the loop's run
+            # (`[ab][bc]*c` matches "bc" in "ccbc"), so that's left to the NFA.
+
             # Prepare search parameters
             search_text = text
             search_suffix = opt.suffix
@@ -646,7 +758,7 @@ def search_regs(bytecode, text, group_count, start_index = 0, end_index = None, 
 
             start_off = start_index
             for _ in range(len(text)):
-                found_idx = search_text.find(search_suffix, start_off)
+                found_idx = search_text.find(search_suffix, start_off, effective_len)
                 if found_idx == -1:
                     break
 
@@ -661,8 +773,9 @@ def search_regs(bytecode, text, group_count, start_index = 0, end_index = None, 
                         match_len = _windowed_rstrip(text, opt.greedy_set_chars, found_idx)
                         search_start = start_index + max(0, (found_idx - match_len) - start_index)
 
-                if opt.prefix_set_chars != None:
-                    if search_start > start_index and text[search_start - 1] in opt.prefix_set_chars:
+                if opt.prefix_set_chars != None and search_start > start_index:
+                    set_text = input_lower if opt.is_prefix_set_case_insensitive else text
+                    if set_text[search_start - 1] in opt.prefix_set_chars:
                         search_start -= 1
 
                 # Now try a real search starting at search_start
@@ -679,6 +792,10 @@ def search_regs(bytecode, text, group_count, start_index = 0, end_index = None, 
                         if search_start + strip_len >= found_idx:
                             can_bypass = True
 
+                # The bypass does not evaluate `$`.
+                if can_bypass and opt.is_anchored_end and found_idx + len(opt.suffix) != effective_len:
+                    can_bypass = False
+
                 if can_bypass:
                     # Optimization: We know we matched everything up to suffix
                     regs = [-1] * ((group_count + 1) * 2 + 1)
@@ -686,7 +803,7 @@ def search_regs(bytecode, text, group_count, start_index = 0, end_index = None, 
                     regs[1] = found_idx + len(opt.suffix)
                     return regs
 
-                regs = match_regs(bytecode, text, group_count, start_index = search_start, end_index = end_index, has_case_insensitive = has_case_insensitive, opt = None, input_lower = input_lower, word_mask = word_mask)
+                regs = match_regs(bytecode, text, group_count, start_index = search_start, end_index = end_index, has_case_insensitive = has_case_insensitive, opt = opt, input_lower = input_lower, word_mask = word_mask, visit_limit = visit_limit)
                 if regs:
                     return regs
 
@@ -698,9 +815,9 @@ def search_regs(bytecode, text, group_count, start_index = 0, end_index = None, 
             return None
 
     num_regs = (group_count + 1) * 2
-    return execute(bytecode, text, num_regs, start_index = start_index, end_index = end_index, anchored = False, has_case_insensitive = has_case_insensitive, input_lower = input_lower, word_mask = word_mask)
+    return execute(bytecode, text, num_regs, start_index = start_index, end_index = end_index, anchored = False, has_case_insensitive = has_case_insensitive, input_lower = input_lower, word_mask = word_mask, first_skip = first_skip, must_advance = must_advance, visit_limit = visit_limit)
 
-def match_regs(bytecode, text, group_count, start_index = 0, end_index = None, has_case_insensitive = False, opt = None, input_lower = None, word_mask = None):
+def match_regs(bytecode, text, group_count, start_index = 0, end_index = None, has_case_insensitive = False, opt = None, input_lower = None, word_mask = None, first_skip = None, visit_limit = 2):
     """Executes a match returning registers.
 
     Args:
@@ -713,17 +830,25 @@ def match_regs(bytecode, text, group_count, start_index = 0, end_index = None, h
       opt: Optimization data.
       input_lower: Pre-calculated lowercase input string.
       word_mask: Pre-calculated word character mask.
+      first_skip: Characters that can never begin a match (see compute_first_skip).
+      visit_limit: How many times the VM may reach a pc at one position (see
+        compute_visit_limit).
 
     Returns:
       List of registers (start/end indices) or None.
     """
-    if input_lower == None and has_case_insensitive:
-        input_lower = text.lower()
-
     effective_len = len(text) if end_index == None else end_index
 
-    # Fast path optimization
-    if opt:
+    # O(1) reject: the character at start_index cannot begin a match.
+    if first_skip != None and (start_index >= effective_len or text[start_index] in first_skip):
+        return None
+
+    if input_lower == None and has_case_insensitive and opt != None and (opt.case_insensitive_prefix or opt.is_prefix_set_case_insensitive or opt.is_greedy_case_insensitive or opt.is_suffix_case_insensitive):
+        input_lower = text.lower()
+
+    # Fast path optimization (the fast path does not evaluate `^`, so it only
+    # applies at index 0 for start-anchored patterns).
+    if opt and (start_index == 0 or not opt.is_anchored_start):
         # Simple anchored prefix match
         check_text = text
         check_prefix = opt.prefix
@@ -737,21 +862,29 @@ def match_regs(bytecode, text, group_count, start_index = 0, end_index = None, h
 
             # 1. Match prefix_set_chars (exactly once)
             if opt.prefix_set_chars != None:
-                if match_end < effective_len and text[match_end] in opt.prefix_set_chars:
+                set_text = input_lower if opt.is_prefix_set_case_insensitive else text
+                if match_end < effective_len and set_text[match_end] in opt.prefix_set_chars:
                     match_end += 1
                 else:
                     fast_path_ok = False
 
-            # 2. Match greedy_set_chars and suffix
+            # 2. Match greedy_set_chars and suffix. Each part is compared case-insensitively
+            # only if that part of the pattern is (see fullmatch_regs).
             if fast_path_ok:
+                suffix_text = text
+                check_suffix = opt.suffix
+                if opt.is_suffix_case_insensitive:
+                    suffix_text = input_lower
+                    check_suffix = opt.suffix.lower()
+                loop_text = input_lower if opt.is_greedy_case_insensitive else text
                 if opt.is_anchored_end:
                     # Must match suffix at the end and greedy_set in between
-                    if text.startswith(opt.suffix, effective_len - len(opt.suffix)):
+                    if suffix_text.startswith(check_suffix, effective_len - len(opt.suffix)):
                         middle_start = match_end
                         middle_end = effective_len - len(opt.suffix)
                         if middle_end >= middle_start:
                             if opt.greedy_set_chars != None:
-                                strip_len = _windowed_lstrip(text, opt.greedy_set_chars, middle_start)
+                                strip_len = _windowed_lstrip(loop_text, opt.greedy_set_chars, middle_start)
                                 if middle_start + strip_len >= middle_end:
                                     match_end = effective_len
                                 else:
@@ -766,12 +899,15 @@ def match_regs(bytecode, text, group_count, start_index = 0, end_index = None, h
                         fast_path_ok = False
                 elif opt.suffix != "":
                     # Case: ^a*b (not anchored at end)
-                    # Find first occurrence of suffix after match_end
-                    found_idx = text.find(opt.suffix, match_end)
+                    # Find first occurrence of suffix after match_end.
+                    # Only valid for lazy loops, or greedy loops that cannot consume the suffix.
+                    if opt.greedy_set_chars != None and not opt.is_ungreedy_loop and not opt.is_suffix_disjoint:
+                        fast_path_ok = False
+                    found_idx = suffix_text.find(check_suffix, match_end) if fast_path_ok else -1
                     if found_idx != -1 and found_idx + len(opt.suffix) <= effective_len:
                         # Check if everything between match_end and found_idx is in greedy_set
                         if opt.greedy_set_chars != None:
-                            strip_len = _windowed_lstrip(text, opt.greedy_set_chars, match_end)
+                            strip_len = _windowed_lstrip(loop_text, opt.greedy_set_chars, match_end)
                             if match_end + strip_len >= found_idx:
                                 match_end = found_idx + len(opt.suffix)
                             else:
@@ -786,9 +922,10 @@ def match_regs(bytecode, text, group_count, start_index = 0, end_index = None, h
                         fast_path_ok = False
                 else:
                     # No suffix, not anchored at end
-                    if opt.greedy_set_chars != None:
-                        # Greedy match the rest.
-                        match_len = _windowed_lstrip(text[:effective_len], opt.greedy_set_chars, match_end)
+                    if opt.greedy_set_chars != None and not opt.is_ungreedy_loop:
+                        # Greedy match the rest. (A lazy loop matches zero iterations here.)
+                        strip_text = input_lower if opt.is_greedy_case_insensitive else text
+                        match_len = _windowed_lstrip(strip_text, opt.greedy_set_chars, match_end, effective_len)
                         match_end += match_len
                     else:
                         # No greedy set, just prefix(+set)
@@ -801,9 +938,9 @@ def match_regs(bytecode, text, group_count, start_index = 0, end_index = None, h
                 return regs
 
     num_regs = (group_count + 1) * 2
-    return execute(bytecode, text, num_regs, start_index = start_index, end_index = end_index, anchored = True, has_case_insensitive = has_case_insensitive, input_lower = input_lower, word_mask = word_mask)
+    return execute(bytecode, text, num_regs, start_index = start_index, end_index = end_index, anchored = True, has_case_insensitive = has_case_insensitive, input_lower = input_lower, word_mask = word_mask, visit_limit = visit_limit)
 
-def fullmatch_regs(bytecode, text, group_count, start_index = 0, end_index = None, has_case_insensitive = False, opt = None, input_lower = None, word_mask = None):
+def fullmatch_regs(bytecode, text, group_count, start_index = 0, end_index = None, has_case_insensitive = False, opt = None, input_lower = None, word_mask = None, first_skip = None, visit_limit = 2):
     """Executes a full match returning registers.
 
     Args:
@@ -816,28 +953,42 @@ def fullmatch_regs(bytecode, text, group_count, start_index = 0, end_index = Non
       opt: Optimization data.
       input_lower: Pre-calculated lowercase input string.
       word_mask: Pre-calculated word character mask.
+      first_skip: Characters that can never begin a match (see compute_first_skip).
+      visit_limit: How many times the VM may reach a pc at one position (see
+        compute_visit_limit).
 
     Returns:
       List of registers (start/end indices) or None.
     """
-    if input_lower == None and has_case_insensitive:
-        input_lower = text.lower()
-
     effective_len = len(text) if end_index == None else end_index
 
-    # Fast path optimization
-    if opt:
+    # O(1) reject: the character at start_index cannot begin a match.
+    if first_skip != None and (start_index >= effective_len or text[start_index] in first_skip):
+        return None
+
+    if input_lower == None and has_case_insensitive and opt != None and (opt.case_insensitive_prefix or opt.is_prefix_set_case_insensitive or opt.is_greedy_case_insensitive or opt.is_suffix_case_insensitive):
+        input_lower = text.lower()
+
+    # Fast path optimization (the fast path does not evaluate `^`, so it only
+    # applies at index 0 for start-anchored patterns).
+    if opt and (start_index == 0 or not opt.is_anchored_start):
         # fullmatch() MUST match the entire string from start_index.
         # So it behaves like it has an implicit $ anchor.
-        check_text = text
+        # Each part is compared case-insensitively only if that part of the pattern is
+        # (scoped flags such as `(?i:x)[a-z]+` can mix both).
+        prefix_text = text
         check_prefix = opt.prefix
-        check_suffix = opt.suffix
         if opt.case_insensitive_prefix:
-            check_text = input_lower
+            prefix_text = input_lower
             check_prefix = opt.prefix.lower()
+        suffix_text = text
+        check_suffix = opt.suffix
+        if opt.is_suffix_case_insensitive:
+            suffix_text = input_lower
             check_suffix = opt.suffix.lower()
+        loop_text = input_lower if opt.is_greedy_case_insensitive else text
 
-        if effective_len >= len(opt.suffix) and check_text.startswith(check_prefix, start_index) and check_text.startswith(check_suffix, effective_len - len(opt.suffix)):
+        if effective_len >= len(opt.suffix) and prefix_text.startswith(check_prefix, start_index) and suffix_text.startswith(check_suffix, effective_len - len(opt.suffix)):
             match_end = start_index + len(opt.prefix)
             if match_end > effective_len - len(opt.suffix):
                 fast_path_ok = False
@@ -845,7 +996,8 @@ def fullmatch_regs(bytecode, text, group_count, start_index = 0, end_index = Non
                 fast_path_ok = True
 
             if opt.prefix_set_chars != None:
-                if match_end < effective_len and check_text[match_end] in opt.prefix_set_chars:
+                set_text = input_lower if opt.is_prefix_set_case_insensitive else text
+                if match_end < effective_len and set_text[match_end] in opt.prefix_set_chars:
                     match_end += 1
                 else:
                     fast_path_ok = False
@@ -855,7 +1007,7 @@ def fullmatch_regs(bytecode, text, group_count, start_index = 0, end_index = Non
                 middle_end = effective_len - len(opt.suffix)
                 if middle_end >= middle_start:
                     if opt.greedy_set_chars != None:
-                        strip_len = _windowed_lstrip(check_text, opt.greedy_set_chars, middle_start)
+                        strip_len = _windowed_lstrip(loop_text, opt.greedy_set_chars, middle_start)
                         if middle_start + strip_len >= middle_end:
                             match_end = effective_len
                         else:
@@ -874,7 +1026,7 @@ def fullmatch_regs(bytecode, text, group_count, start_index = 0, end_index = Non
                 return regs
 
     num_regs = (group_count + 1) * 2
-    regs = execute(bytecode, text, num_regs, start_index = start_index, end_index = end_index, anchored = True, has_case_insensitive = has_case_insensitive, input_lower = input_lower, word_mask = word_mask)
+    regs = execute(bytecode, text, num_regs, start_index = start_index, end_index = end_index, anchored = True, has_case_insensitive = has_case_insensitive, input_lower = input_lower, word_mask = word_mask, require_end = True, visit_limit = visit_limit)
     if regs and regs[1] != effective_len:
         return None
     return regs
@@ -974,7 +1126,7 @@ def MatchObject(text, regs, compiled, pos, endpos):
         lastgroup = lastgroup,
     )
 
-def search_bytecode(bytecode, text, named_groups, group_count, start_index = 0, end_index = None, has_case_insensitive = False, opt = None, input_lower = None, word_mask = None):
+def search_bytecode(bytecode, text, named_groups, group_count, start_index = 0, end_index = None, has_case_insensitive = False, opt = None, input_lower = None, word_mask = None, first_skip = None, visit_limit = 2):
     """Executes a search using bytecode.
 
     Args:
@@ -988,11 +1140,25 @@ def search_bytecode(bytecode, text, named_groups, group_count, start_index = 0, 
       opt: Optimization data.
       input_lower: Pre-calculated lowercase input string.
       word_mask: Pre-calculated word character mask.
+      first_skip: Characters that can never begin a match (see compute_first_skip).
+      visit_limit: How many times the VM may reach a pc at one position (see
+        compute_visit_limit).
 
     Returns:
       A MatchObject or None.
     """
-    regs = search_regs(bytecode, text, group_count, start_index = start_index, end_index = end_index, has_case_insensitive = has_case_insensitive, opt = opt, input_lower = input_lower, word_mask = word_mask)
+
+    # Clamp pos and endpos to the string, like Python. This is inlined rather than a
+    # helper function: a lexer calls match() at every position, and one more function
+    # call per match() cost about 10% of such a loop.
+    n = len(text)
+    if end_index == None or end_index > n:
+        end_index = n
+    elif end_index < 0:
+        end_index = 0
+    if start_index < 0 or start_index > n:
+        start_index = 0 if start_index < 0 else n
+    regs = search_regs(bytecode, text, group_count, start_index = start_index, end_index = end_index, has_case_insensitive = has_case_insensitive, opt = opt, input_lower = input_lower, word_mask = word_mask, first_skip = first_skip, visit_limit = visit_limit)
     if not regs:
         return None
 
@@ -1003,11 +1169,12 @@ def search_bytecode(bytecode, text, named_groups, group_count, start_index = 0, 
         pattern = None,
         has_case_insensitive = has_case_insensitive,
         opt = opt,
+        first_skip = first_skip,
+        visit_limit = visit_limit,
     )
-    effective_endpos = len(text) if end_index == None else end_index
-    return MatchObject(text, regs, compiled, start_index, effective_endpos)
+    return MatchObject(text, regs, compiled, start_index, end_index)
 
-def match_bytecode(bytecode, text, named_groups, group_count, start_index = 0, end_index = None, has_case_insensitive = False, opt = None, input_lower = None, word_mask = None):
+def match_bytecode(bytecode, text, named_groups, group_count, start_index = 0, end_index = None, has_case_insensitive = False, opt = None, input_lower = None, word_mask = None, first_skip = None, visit_limit = 2):
     """Executes a match using bytecode.
 
     Args:
@@ -1021,11 +1188,23 @@ def match_bytecode(bytecode, text, named_groups, group_count, start_index = 0, e
       opt: Optimization data.
       input_lower: Pre-calculated lowercase input string.
       word_mask: Pre-calculated word character mask.
+      first_skip: Characters that can never begin a match (see compute_first_skip).
+      visit_limit: How many times the VM may reach a pc at one position (see
+        compute_visit_limit).
 
     Returns:
       A MatchObject or None.
     """
-    regs = match_regs(bytecode, text, group_count, start_index = start_index, end_index = end_index, has_case_insensitive = has_case_insensitive, opt = opt, input_lower = input_lower, word_mask = word_mask)
+
+    # Clamp pos and endpos to the string, like Python (inlined; see search_bytecode).
+    n = len(text)
+    if end_index == None or end_index > n:
+        end_index = n
+    elif end_index < 0:
+        end_index = 0
+    if start_index < 0 or start_index > n:
+        start_index = 0 if start_index < 0 else n
+    regs = match_regs(bytecode, text, group_count, start_index = start_index, end_index = end_index, has_case_insensitive = has_case_insensitive, opt = opt, input_lower = input_lower, word_mask = word_mask, first_skip = first_skip, visit_limit = visit_limit)
     if not regs:
         return None
 
@@ -1036,11 +1215,12 @@ def match_bytecode(bytecode, text, named_groups, group_count, start_index = 0, e
         pattern = None,
         has_case_insensitive = has_case_insensitive,
         opt = opt,
+        first_skip = first_skip,
+        visit_limit = visit_limit,
     )
-    effective_endpos = len(text) if end_index == None else end_index
-    return MatchObject(text, regs, compiled, start_index, effective_endpos)
+    return MatchObject(text, regs, compiled, start_index, end_index)
 
-def fullmatch_bytecode(bytecode, text, named_groups, group_count, start_index = 0, end_index = None, has_case_insensitive = False, opt = None, input_lower = None, word_mask = None):
+def fullmatch_bytecode(bytecode, text, named_groups, group_count, start_index = 0, end_index = None, has_case_insensitive = False, opt = None, input_lower = None, word_mask = None, first_skip = None, visit_limit = 2):
     """Executes a full match using bytecode.
 
     Args:
@@ -1054,11 +1234,23 @@ def fullmatch_bytecode(bytecode, text, named_groups, group_count, start_index = 
       opt: Optimization data.
       input_lower: Pre-calculated lowercase input string.
       word_mask: Pre-calculated word character mask.
+      first_skip: Characters that can never begin a match (see compute_first_skip).
+      visit_limit: How many times the VM may reach a pc at one position (see
+        compute_visit_limit).
 
     Returns:
       A MatchObject or None.
     """
-    regs = fullmatch_regs(bytecode, text, group_count, start_index = start_index, end_index = end_index, has_case_insensitive = has_case_insensitive, opt = opt, input_lower = input_lower, word_mask = word_mask)
+
+    # Clamp pos and endpos to the string, like Python (inlined; see search_bytecode).
+    n = len(text)
+    if end_index == None or end_index > n:
+        end_index = n
+    elif end_index < 0:
+        end_index = 0
+    if start_index < 0 or start_index > n:
+        start_index = 0 if start_index < 0 else n
+    regs = fullmatch_regs(bytecode, text, group_count, start_index = start_index, end_index = end_index, has_case_insensitive = has_case_insensitive, opt = opt, input_lower = input_lower, word_mask = word_mask, first_skip = first_skip, visit_limit = visit_limit)
     if not regs:
         return None
 
@@ -1069,6 +1261,7 @@ def fullmatch_bytecode(bytecode, text, named_groups, group_count, start_index = 
         pattern = None,
         has_case_insensitive = has_case_insensitive,
         opt = opt,
+        first_skip = first_skip,
+        visit_limit = visit_limit,
     )
-    effective_endpos = len(text) if end_index == None else end_index
-    return MatchObject(text, regs, compiled, start_index, effective_endpos)
+    return MatchObject(text, regs, compiled, start_index, end_index)
