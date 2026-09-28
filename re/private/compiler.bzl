@@ -1600,12 +1600,19 @@ def optimize_matcher(instructions):
         else:
             break
 
-    # Calculate disjointness of suffix and greedy set
+    # Calculate disjointness of suffix and greedy set. With scoped flags the two can
+    # differ in case-sensitivity: in `(?i:[a-c]*)B` the loop consumes "B", and in
+    # `[A-C]*(?i:b)` the suffix matches "B". So compare every character the suffix
+    # can match with how the loop matches it (lowered if the loop is case-insensitive).
     is_suffix_disjoint = True
     if greedy_set_chars != None and len(suffix) > 0:
         for i in range(len(suffix)):
-            if suffix[i] in greedy_set_chars:
-                is_suffix_disjoint = False
+            c = suffix[i]
+            for x in ([c.lower(), c.upper()] if is_suffix_case_insensitive else [c]):
+                if (x.lower() if is_greedy_case_insensitive else x) in greedy_set_chars:
+                    is_suffix_disjoint = False
+                    break
+            if not is_suffix_disjoint:
                 break
 
     if temp_idx < len(instructions) and instructions[temp_idx][0] == OP_MATCH:

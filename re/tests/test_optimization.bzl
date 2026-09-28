@@ -81,6 +81,7 @@ def run_tests_optimization(env):
     _run_first_skip_tests(env)
     _run_windowed_strip_tests(env)
     _run_incomplete_set_tests(env)
+    _run_mixed_case_tests(env)
 
 def _run_match_fast_path_tests(env):
     """Checks that the anchored match() fast path agrees with the NFA."""
@@ -203,3 +204,24 @@ def _run_incomplete_set_tests(env):
     assert_span(env, search("x[[:^digit:]]*y", "zxaby"), (1, 5), "search x[[:^digit:]]*y")
     assert_span(env, compile("[[:^digit:]]+").fullmatch("ab"), (0, 2), "fullmatch [[:^digit:]]+")
     assert_eq(env, findall("[[:^digit:]]+", "a1bc2"), ["a", "bc"], "findall [[:^digit:]]+")
+
+def _run_mixed_case_tests(env):
+    """Checks the fast paths when parts of a pattern differ in case-sensitivity."""
+    cases = [
+        # A case-insensitive loop can consume a case-sensitive suffix, and vice versa.
+        ("(?i:[a-c]*)B", "search", "aBB", (0, 3)),
+        ("(?i:[a-c]*)B", "match", "aBB", (0, 3)),
+        ("(?i:[a-c]*)B", "fullmatch", "aBB", (0, 3)),
+        ("[A-C]*(?i:b)", "search", "ABB", (0, 3)),
+        ("[A-C]*(?i:b)", "match", "ABB", (0, 3)),
+        ("[A-C]*(?i:b)", "search", "xABbB", (1, 4)),
+        ("[a-c]*(?i:B)", "match", "abB", (0, 3)),
+
+        # Only the loop or the suffix ignores case.
+        ("(?i:[a-c]*)d", "search", "xaBDd", (4, 5)),
+        ("[A-C]*(?i:d)", "match", "ABDd", (0, 3)),
+    ]
+    for pattern, method, text, expected in cases:
+        prog = compile(pattern)
+        fn = {"fullmatch": prog.fullmatch, "match": prog.match, "search": prog.search}[method]
+        assert_span(env, fn(text), expected, "%s(%r, %r)" % (method, pattern, text))
