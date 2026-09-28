@@ -1425,6 +1425,7 @@ def optimize_matcher(instructions):
 
     # After prefix, check for sets and loops
     prefix_set_chars = None
+    is_prefix_set_case_insensitive = False
     greedy_set_chars = None
     is_greedy_case_insensitive = False
 
@@ -1449,6 +1450,7 @@ def optimize_matcher(instructions):
 
                     if chars != None:
                         prefix_set_chars = chars
+                        is_prefix_set_case_insensitive = is_ci
                         greedy_set_chars = chars
                         is_greedy_case_insensitive = is_ci
                         idx += 2
@@ -1457,12 +1459,14 @@ def optimize_matcher(instructions):
                     set_data, is_negated = inst[1]
                     if not is_negated and set_data.is_simple:
                         prefix_set_chars = set_data.all_chars
+                        is_prefix_set_case_insensitive = inst[2]
                         idx += 1
             elif itype == OP_SET:
                 # Case 2 (at end): Just a match-one prefix set [set]
                 set_data, is_negated = inst[1]
                 if not is_negated and set_data.is_simple:
                     prefix_set_chars = set_data.all_chars
+                    is_prefix_set_case_insensitive = inst[2]
                     idx += 1
 
         elif itype == OP_GREEDY_LOOP or itype == OP_UNGREEDY_LOOP:
@@ -1620,6 +1624,7 @@ def optimize_matcher(instructions):
             prefix = prefix,
             case_insensitive_prefix = case_insensitive_prefix,
             prefix_set_chars = prefix_set_chars,
+            is_prefix_set_case_insensitive = is_prefix_set_case_insensitive,
             greedy_set_chars = greedy_set_chars,
             is_greedy_case_insensitive = is_greedy_case_insensitive,
             suffix = suffix,

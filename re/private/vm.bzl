@@ -684,7 +684,8 @@ def search_regs(bytecode, text, group_count, start_index = 0, end_index = None, 
             return match_regs(bytecode, text, group_count, start_index = start_index, end_index = end_index, has_case_insensitive = has_case_insensitive, opt = opt, input_lower = input_lower, word_mask = word_mask, visit_limit = visit_limit)
 
         # Only `...prefix [set]* suffix$` and `...prefix [set]+ suffix$` are handled here.
-        prefix_set_is_plus = opt.prefix_set_chars != None and opt.prefix_set_chars == opt.greedy_set_chars
+        # (`(?i:[ab])[ab]*` has equal sets but isn't `[ab]+`.)
+        prefix_set_is_plus = opt.prefix_set_chars != None and opt.prefix_set_chars == opt.greedy_set_chars and opt.is_prefix_set_case_insensitive == opt.is_greedy_case_insensitive
         if opt.is_anchored_end and not has_case_insensitive and (opt.prefix_set_chars == None or prefix_set_is_plus):
             # Case: ...sets...suffix$
             if text.startswith(opt.suffix, effective_len - len(opt.suffix)):
@@ -741,7 +742,11 @@ def search_regs(bytecode, text, group_count, start_index = 0, end_index = None, 
                 start_off = found_idx + 1
                 if start_off > effective_len:
                     break
-        elif opt.suffix != "":
+        elif opt.suffix != "" and (opt.prefix_set_chars == None or opt.greedy_set_chars == None or prefix_set_is_plus):
+            # Backing up from the suffix over the loop finds the leftmost start, but in
+            # `[set1][set2]*suffix` the set1 character can be inside the loop's run
+            # (`[ab][bc]*c` matches "bc" in "ccbc"), so that's left to the NFA.
+
             # Prepare search parameters
             search_text = text
             search_suffix = opt.suffix
@@ -768,8 +773,9 @@ def search_regs(bytecode, text, group_count, start_index = 0, end_index = None, 
                         match_len = _windowed_rstrip(text, opt.greedy_set_chars, found_idx)
                         search_start = start_index + max(0, (found_idx - match_len) - start_index)
 
-                if opt.prefix_set_chars != None:
-                    if search_start > start_index and text[search_start - 1] in opt.prefix_set_chars:
+                if opt.prefix_set_chars != None and search_start > start_index:
+                    set_text = input_lower if opt.is_prefix_set_case_insensitive else text
+                    if set_text[search_start - 1] in opt.prefix_set_chars:
                         search_start -= 1
 
                 # Now try a real search starting at search_start
@@ -837,7 +843,7 @@ def match_regs(bytecode, text, group_count, start_index = 0, end_index = None, h
     if first_skip != None and (start_index >= effective_len or text[start_index] in first_skip):
         return None
 
-    if input_lower == None and has_case_insensitive and opt != None and (opt.case_insensitive_prefix or opt.is_greedy_case_insensitive or opt.is_suffix_case_insensitive):
+    if input_lower == None and has_case_insensitive and opt != None and (opt.case_insensitive_prefix or opt.is_prefix_set_case_insensitive or opt.is_greedy_case_insensitive or opt.is_suffix_case_insensitive):
         input_lower = text.lower()
 
     # Fast path optimization (the fast path does not evaluate `^`, so it only
@@ -856,7 +862,8 @@ def match_regs(bytecode, text, group_count, start_index = 0, end_index = None, h
 
             # 1. Match prefix_set_chars (exactly once)
             if opt.prefix_set_chars != None:
-                if match_end < effective_len and text[match_end] in opt.prefix_set_chars:
+                set_text = input_lower if opt.is_prefix_set_case_insensitive else text
+                if match_end < effective_len and set_text[match_end] in opt.prefix_set_chars:
                     match_end += 1
                 else:
                     fast_path_ok = False
@@ -959,7 +966,7 @@ def fullmatch_regs(bytecode, text, group_count, start_index = 0, end_index = Non
     if first_skip != None and (start_index >= effective_len or text[start_index] in first_skip):
         return None
 
-    if input_lower == None and has_case_insensitive and opt != None and (opt.case_insensitive_prefix or opt.is_greedy_case_insensitive or opt.is_suffix_case_insensitive):
+    if input_lower == None and has_case_insensitive and opt != None and (opt.case_insensitive_prefix or opt.is_prefix_set_case_insensitive or opt.is_greedy_case_insensitive or opt.is_suffix_case_insensitive):
         input_lower = text.lower()
 
     # Fast path optimization (the fast path does not evaluate `^`, so it only
@@ -989,9 +996,8 @@ def fullmatch_regs(bytecode, text, group_count, start_index = 0, end_index = Non
                 fast_path_ok = True
 
             if opt.prefix_set_chars != None:
-                # Checked against the original text: exact for case-sensitive sets, and
-                # conservative (falls back to the NFA) for case-insensitive ones.
-                if match_end < effective_len and text[match_end] in opt.prefix_set_chars:
+                set_text = input_lower if opt.is_prefix_set_case_insensitive else text
+                if match_end < effective_len and set_text[match_end] in opt.prefix_set_chars:
                     match_end += 1
                 else:
                     fast_path_ok = False

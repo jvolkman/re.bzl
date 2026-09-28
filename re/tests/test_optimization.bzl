@@ -233,6 +233,30 @@ def _run_mixed_case_tests(env):
         ("x(?i:[a-c]*)D$", "match", "xAcd", None),
         ("x[a-c]*(?i:d)$", "match", "xabD", (0, 4)),
         ("x[a-c]*(?i:d)$", "match", "xaBD", None),
+
+        # The suffix search backs up over a case-insensitive prefix set in either case.
+        ("(?i)[ab]c", "search", "Ac", (0, 2)),
+        ("(?i)[ab]c", "search", "xBC", (1, 3)),
+        ("(?i)[ab][cd]*d", "search", "Acd", (0, 3)),
+        ("(?i:[ab])c", "search", "Ac", (0, 2)),
+        ("(?i:[ab])c", "search", "AC", None),
+        ("(?i:[ab])[cd]*C", "search", "xBdC", (1, 4)),
+        ("(?i:[ab])[cd]*C", "search", "xBdc", None),
+        ("(?i)[ab]c", "match", "Ac", (0, 2)),
+        ("(?i)[ab]c", "fullmatch", "BC", (0, 2)),
+        ("(?i)x[ab][cd]*", "match", "xBDc", (0, 4)),
+
+        # The prefix set of `[set1][set2]*suffix` can be inside the loop's run.
+        ("[ab][bc]*c", "search", "ccbc", (2, 4)),
+        ("[ab][bc]*c", "search", "xbcbc", (1, 5)),
+        ("[ab][bc]*c", "search", "cca", None),
+
+        # Equal sets that differ in case-sensitivity are not `[set]+`.
+        ("(?i:[ab])[ab]*b", "search", "xAab", (1, 4)),
+        ("(?i:[ab])[ab]*b", "search", "xAAb", (2, 4)),
+        ("(?i:[ab])[ab]*b$", "search", "xAab", (1, 4)),
+        ("(?i:[ab])[ab]*b$", "search", "Bb", (0, 2)),
+        ("[ab](?i:[ab]*)b", "search", "xaAb", (1, 4)),
     ]
     for pattern, method, text, expected in cases:
         prog = compile(pattern)
