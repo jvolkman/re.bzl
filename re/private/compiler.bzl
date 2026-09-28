@@ -648,7 +648,10 @@ def _get_inst_chars(inst):
         return inst[1], inst[2]  # val, is_ci
     elif inst[0] == OP_SET:
         set_struct, is_negated = inst[1]
-        if not is_negated:
+
+        # all_chars lists every member only for a simple set (not one with a negated
+        # POSIX class such as [[:^digit:]]).
+        if not is_negated and set_struct.is_simple:
             return set_struct.all_chars, inst[2]  # is_ci
     elif inst[0] == OP_ANY:
         return _CHR_LOOKUP, False
@@ -1441,7 +1444,7 @@ def optimize_matcher(instructions):
                     else:
                         set_data, is_negated = inst[1]
                         is_ci = inst[2]
-                        if not is_negated:
+                        if not is_negated and set_data.is_simple:
                             chars = set_data.all_chars
 
                     if chars != None:
@@ -1452,13 +1455,13 @@ def optimize_matcher(instructions):
                 elif itype == OP_SET:
                     # Case 2: Just a match-one prefix set [set]
                     set_data, is_negated = inst[1]
-                    if not is_negated:
+                    if not is_negated and set_data.is_simple:
                         prefix_set_chars = set_data.all_chars
                         idx += 1
             elif itype == OP_SET:
                 # Case 2 (at end): Just a match-one prefix set [set]
                 set_data, is_negated = inst[1]
-                if not is_negated:
+                if not is_negated and set_data.is_simple:
                     prefix_set_chars = set_data.all_chars
                     idx += 1
 
@@ -1491,7 +1494,7 @@ def optimize_matcher(instructions):
                         elif atom_inst[0] == OP_SET:
                             set_data, is_negated = atom_inst[1]
                             is_ci = atom_inst[2]
-                            if not is_negated:
+                            if not is_negated and set_data.is_simple:
                                 chars = set_data.all_chars
 
                         if chars != None:
@@ -1525,7 +1528,7 @@ def optimize_matcher(instructions):
                             elif atom_inst[0] == OP_SET:
                                 set_data, is_negated = atom_inst[1]
                                 is_ci = atom_inst[2]
-                                if not is_negated:
+                                if not is_negated and set_data.is_simple:
                                     chars = set_data.all_chars
 
                             if chars != None:

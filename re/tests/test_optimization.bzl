@@ -80,6 +80,7 @@ def run_tests_optimization(env):
     _run_search_suffix_endpos_tests(env)
     _run_first_skip_tests(env)
     _run_windowed_strip_tests(env)
+    _run_incomplete_set_tests(env)
 
 def _run_match_fast_path_tests(env):
     """Checks that the anchored match() fast path agrees with the NFA."""
@@ -188,3 +189,17 @@ def _run_windowed_strip_tests(env):
         if n < 2000:
             assert_span(env, search("(x)a*$", "x" + run), (0, n + 1), "search (x)a*$ over %d chars" % n)
             assert_span(env, match("(x)(?i:a*)$", "x" + run.upper()), (0, n + 1), "match (x)(?i:a*)$ over %d chars" % n)
+
+def _run_incomplete_set_tests(env):
+    """Checks that the fast paths don't use a set's all_chars when it's incomplete.
+
+    A set with a negated POSIX class lists only some of its members in all_chars.
+    [[:^digit:]] is \\D, so the expected results are CPython's for \\D.
+    """
+    assert_span(env, match("[[:^digit:]]*", "ab1"), (0, 2), "match [[:^digit:]]*")
+    assert_span(env, search("[[:^digit:]]*1", "ab1"), (0, 3), "search [[:^digit:]]*1")
+    assert_span(env, match("x[[:^digit:]]*", "xab1"), (0, 3), "match x[[:^digit:]]*")
+    assert_span(env, match("[a[:^digit:]]*[[:digit:]]", "ab1"), (0, 3), "match [a[:^digit:]]*[[:digit:]]")
+    assert_span(env, search("x[[:^digit:]]*y", "zxaby"), (1, 5), "search x[[:^digit:]]*y")
+    assert_span(env, compile("[[:^digit:]]+").fullmatch("ab"), (0, 2), "fullmatch [[:^digit:]]+")
+    assert_eq(env, findall("[[:^digit:]]+", "a1bc2"), ["a", "bc"], "findall [[:^digit:]]+")
