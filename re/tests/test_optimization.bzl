@@ -145,13 +145,23 @@ def _run_search_suffix_endpos_tests(env):
 def _run_first_skip_tests(env):
     """Checks the first-character prefilter used by unanchored search."""
     assert_eq(env, compile("x*").first_skip, None, "no first_skip when the pattern can match empty")
-    assert_eq(env, compile("(?i)a").first_skip, None, "no first_skip for case-insensitive first atoms")
     assert_eq(env, compile(".a").first_skip, None, "no first_skip for patterns starting with .")
     skip = compile(r"a|\bbc").first_skip
     assert_eq(env, "a" in skip or "b" in skip, False, "first_skip excludes possible first chars")
     assert_eq(env, "z" in skip, True, "first_skip includes impossible first chars")
 
+    ci_skip = compile("(?i)a|bc|[d-e]+|f*g").first_skip
+    for c in ["a", "A", "b", "B", "d", "D", "e", "E", "f", "F", "g", "G"]:
+        assert_eq(env, c in ci_skip, False, "case-insensitive first_skip excludes %r" % c)
+    assert_eq(env, "z" in ci_skip and "Z" in ci_skip, True, "case-insensitive first_skip includes z/Z")
+
+    scoped_skip = compile("(?i:a)|B").first_skip
+    for c in ["a", "A", "B"]:
+        assert_eq(env, c in scoped_skip, False, "scoped first_skip excludes %r" % c)
+    assert_eq(env, "b" in scoped_skip, True, "scoped first_skip includes 'b'")
+
     assert_span(env, search("a|bc", "zzbc"), (2, 4), "search a|bc")
+    assert_span(env, search("(?i)a|bc", "zzBC"), (2, 4), "search (?i)a|bc")
     assert_span(env, search(r"\bfoo", "xfoo foo"), (5, 8), "search \\bfoo")
     assert_span(env, search("(?:ab|cd)+e", "xxabcdcde"), (2, 9), "search (?:ab|cd)+e")
     assert_span(env, search("[xy]", "aaa"), None, "search [xy] without candidates")
@@ -162,6 +172,11 @@ def _run_first_skip_tests(env):
     prog = compile("[ab]c")
     assert_span(env, prog.match("xac", 1), (1, 3), "match [ab]c at pos=1")
     assert_span(env, prog.match("xac", 0), None, "match [ab]c at a rejected char")
+    ci_prog = compile("(?i)[ab]c")
+    assert_span(env, ci_prog.match("xAc", 1), (1, 3), "match (?i)[ab]c at pos=1")
+    assert_span(env, ci_prog.match("xAc", 0), None, "match (?i)[ab]c at a rejected char")
+    assert_span(env, ci_prog.fullmatch("Bc"), (0, 2), "fullmatch (?i)[ab]c on Bc")
+    assert_span(env, ci_prog.fullmatch("xc"), None, "fullmatch (?i)[ab]c on rejected char")
     assert_span(env, compile("a").match("a", 1), None, "match a at the end")
     assert_span(env, compile("ab").fullmatch("ab", 0, 1), None, "fullmatch ab with endpos=1")
     assert_span(env, match("a+", ""), None, "match a+ on empty input")
