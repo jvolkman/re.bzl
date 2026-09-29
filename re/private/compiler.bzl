@@ -1671,8 +1671,8 @@ def compute_first_skip(instructions):
 
     Returns:
       A string of characters that cannot begin a match, or None if the analysis does
-      not apply (the pattern can match the empty string, or starts with '.', a negated
-      or complex set, or a case-insensitive atom).
+      not apply (the pattern can match the empty string, or starts with '.', or a
+      negated or complex set).
     """
     num_insts = len(instructions)
     seen = {}
@@ -1698,24 +1698,32 @@ def compute_first_skip(instructions):
               op == OP_WORD_BOUNDARY or op == OP_NOT_WORD_BOUNDARY):
             stack += [pc + 1]
         elif op == OP_CHAR:
+            # CI atoms store c = char.lower() and match x.lower() == c; across
+            # CHR_LOOKUP (0..255), that holds only for x in {c, c.upper()}.
+            c = inst[1]
+            first[c] = True
             if inst[2]:
-                return None
-            first[inst[1]] = True
+                first[c.upper()] = True
         elif op == OP_STRING:
+            c = inst[1][0]
+            first[c] = True
             if inst[2]:
-                return None
-            first[inst[1][0]] = True
+                first[c.upper()] = True
         elif op == OP_SET:
             set_struct, is_negated = inst[1]
-            if is_negated or inst[2] or not set_struct.is_simple:
+            if is_negated or not set_struct.is_simple:
                 return None
+            is_ci = inst[2]
             for c in set_struct.all_chars.elems():
                 first[c] = True
+                if is_ci:
+                    first[c.upper()] = True
         elif op == OP_GREEDY_LOOP or op == OP_UNGREEDY_LOOP:
-            if inst[3]:
-                return None
+            is_ci = inst[3]
             for c in inst[1].elems():
                 first[c] = True
+                if is_ci:
+                    first[c.upper()] = True
             stack += [inst[2]]  # The loop may match zero characters.
         else:
             # OP_MATCH (empty match possible), OP_ANY, OP_ANY_NO_NL, ...
