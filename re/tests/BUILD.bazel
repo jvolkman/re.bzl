@@ -1,12 +1,16 @@
 load("@bazel_skylib//:bzl_library.bzl", "bzl_library")
 load("//re/tests:test_anchors.bzl", "anchors_test")
 load("//re/tests:test_api.bzl", "api_test")
+load("//re/tests:test_compile_errors.bzl", "compile_errors_test")
 load("//re/tests:test_core.bzl", "core_test")
+load("//re/tests:test_equivalence.bzl", "equivalence_test")
 load("//re/tests:test_escape.bzl", "escape_test")
 load("//re/tests:test_flags.bzl", "flags_test")
+load("//re/tests:test_fowler.bzl", "fowler_test")
 load("//re/tests:test_groups.bzl", "groups_test")
 load("//re/tests:test_optimization.bzl", "optimization_test")
 load("//re/tests:test_quantifiers.bzl", "quantifiers_test")
+load("//re/tests:test_re2_search.bzl", "re2_search_test")
 load("//re/tests:test_root_import.bzl", "root_import_test")
 load("//re/tests:test_sub_errors.bzl", "sub_template_errors_test")
 load("//re/tests:test_ungreedy_opt.bzl", "ungreedy_opt_test")
@@ -30,11 +34,15 @@ api_test(name = "api_test")
 
 core_test(name = "core_test")
 
+equivalence_test(name = "equivalence_test")
+
 escape_test(name = "escape_test")
 
 groups_test(name = "groups_test")
 
 quantifiers_test(name = "quantifiers_test")
+
+compile_errors_test(name = "compile_errors_test")
 
 sub_template_errors_test(name = "sub_template_errors_test")
 
@@ -48,6 +56,10 @@ verbose_test(name = "verbose_test")
 
 flags_test(name = "flags_test")
 
+fowler_test(name = "fowler_test")
+
+re2_search_test(name = "re2_search_test")
+
 ungreedy_opt_test(name = "ungreedy_opt_test")
 
 test_suite(
@@ -56,11 +68,14 @@ test_suite(
         ":anchors_test",
         ":api_test",
         ":core_test",
+        ":equivalence_test",
         ":escape_test",
         ":flags_test",
+        ":fowler_test",
         ":groups_test",
         ":optimization_test",
         ":quantifiers_test",
+        ":re2_search_test",
         ":root_import_test",
         ":ungreedy_opt_test",
         ":unicode_test",

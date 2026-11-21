@@ -30,6 +30,9 @@ def run_tests_escape(env):
 
     # RE2 Compatibility: Octal Escapes
     assert_match(env, "\\141", "a", "a")
+    assert_match(env, "\\141b", "ab", "ab")
+    assert_match(env, "\\0b", "\0b", "\0b")
+    assert_match(env, "[\\141b]+", "ab", "ab")
     assert_match(env, "\\000", "\0", "\0")
 
     # RE2 Compatibility: Additional Escapes
@@ -78,8 +81,19 @@ def run_tests_escape(env):
     assert_match(env, "[a-c-e]", "-", "-")
     assert_match(env, "[[:digit:]a-fA-F]", "e", "e")  # Mixed POSIX and literal
     assert_match(env, "[a-f[:digit:]A-F]", "5", "5")
+    assert_match(env, "[[:notaclass:]]", ":]", ":]")  # Invalid POSIX class keeps ':'
+    assert_match(env, "[[:a]", ":", ":")  # Unclosed POSIX class keeps ':'
     assert_match(env, "[^-a-c]", "d", "d")  # Negated start hyphen
     assert_match(env, "[^-a-c]", "-", None)
+
+    # Negated predefined classes inside bracket expressions (\D, \W, \S).
+    assert_match(env, r"[\D]+", "ab1", "ab")
+    assert_match(env, r"[\S]+", "  hi ", "hi")
+    assert_match(env, r"[\W]+", "a!@#b", "!@#")
+    assert_match(env, r"[\s\S]+", "a\nb", "a\nb")
+    assert_match(env, r"[^\s\S]", "a", None)
+    assert_match(env, r"[^\d\D]", "1a", None)
+    assert_match(env, r"[\S世]+", " 世界 ", "世界")
 
     # RE2 Compatibility: Quoted Literals
     assert_match(env, "\\Q.*+\\E", ".*+", ".*+")

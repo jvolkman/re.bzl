@@ -45,7 +45,7 @@ When using `OP_GREEDY_LOOP` in unanchored searches, memoize the absolute end pos
 
 A `def` call is expensive compared to operators, and built-in calls such as `len()` are not free either. A lexer calls `match()` at every position, so per-call overhead adds up.
 
-- _Result_: One extra helper call per `match()` slowed a lexer benchmark by about **10%**; inlining the same checks was within noise (see the pos/endpos clamping in `search_bytecode`).
+- _Result_: One extra helper call per `match()` slowed a lexer benchmark by about **10%**; inlining the same checks was within noise (see the pos/endpos clamping in `compile()`'s methods).
 - _Result_: Rejecting an impossible first character in the compiled object's `match()`, two calls earlier than before, made the lexer benchmarks **9–14%** faster.
 
 ### 5. Sort `lstrip`/`rstrip` Character Sets

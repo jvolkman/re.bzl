@@ -2,19 +2,29 @@
 
 load(
     "//re/private:compiler.bzl",
+    "build_alt_dispatch",
     "compile_regex",
+    "compute_first_chars",
     "compute_first_skip",
     "compute_visit_limit",
     "optimize_matcher",
 )
 load(
+    "//re/private:constants.bzl",
+    "CHR_LOOKUP",
+)
+load(
     "//re/private:vm.bzl",
     "MatchObject",
+    "build_scanner_rule",
     "expand_template",
-    "fullmatch_bytecode",
-    "match_bytecode",
+    "fullmatch_alt_regs",
+    "fullmatch_regs",
+    "match_alt_regs",
+    "match_regs",
+    "match_scanner_rule",
     "parse_replacement_template",
-    "search_bytecode",
+    "scan_scanner_rules",
     "search_regs",
 )
 
@@ -33,9 +43,10 @@ def compile(pattern, flags = 0):
 
     Returns:
       A struct containing the compiled bytecode and methods:
-      - search(text): Scans text for a match. Returns a MatchObject or None.
-      - match(text): Checks for a match at the beginning of text. Returns a MatchObject or None.
-      - fullmatch(text): Checks for a match of the entire text. Returns a MatchObject or None.
+      - search(text, pos=0, endpos=None): Scans text for a match. Returns a MatchObject or None.
+      - match(text, pos=0, endpos=None): Checks for a match at pos. Returns a MatchObject or None.
+      - match_end(text, pos=0, endpos=None): Like match(), but returns the integer end index or None without allocating a MatchObject.
+      - fullmatch(text, pos=0, endpos=None): Checks for a match of the entire slice text[pos:endpos]. Returns a MatchObject or None.
       - pattern: The pattern string.
       - group_count: The number of capturing groups.
 
@@ -53,16 +64,29 @@ def compile(pattern, flags = 0):
       - lastindex: The integer index of the last matched capturing group.
       - lastgroup: The name of the last matched capturing group.
     """
-    if hasattr(pattern, "bytecode"):
+    if type(pattern) != _STRING_TYPE and hasattr(pattern, "bytecode"):
         return pattern
 
     bytecode, named_groups, group_count, has_case_insensitive = compile_regex(pattern, flags = flags)
     opt = optimize_matcher(bytecode)
+    alt_dispatch = build_alt_dispatch(bytecode, group_count) if opt == None else None
     first_skip = compute_first_skip(bytecode)
     visit_limit = compute_visit_limit(bytecode)
+    self_ref = [None]
 
     def _search(text, pos = 0, endpos = None):
-        return search_bytecode(bytecode, text, named_groups, group_count, start_index = pos, end_index = endpos, has_case_insensitive = has_case_insensitive, opt = opt, first_skip = first_skip, visit_limit = visit_limit)
+        # Clamp pos and endpos to the string, like Python (inlined to avoid helper call overhead).
+        n = len(text)
+        if endpos == None or endpos > n:
+            endpos = n
+        elif endpos < 0:
+            endpos = 0
+        if pos < 0 or pos > n:
+            pos = 0 if pos < 0 else n
+        regs = search_regs(bytecode, text, group_count, start_index = pos, end_index = endpos, has_case_insensitive = has_case_insensitive, opt = opt, first_skip = first_skip, visit_limit = visit_limit, alt_dispatch = alt_dispatch)
+        if not regs:
+            return None
+        return MatchObject(text, regs, self_ref[0], pos, endpos)
 
     def _match(text, pos = 0, endpos = None):
         # A lexer calls match() at every position, and most calls fail at the first
@@ -72,27 +96,76 @@ def compile(pattern, flags = 0):
         # negative pos is left to the clamping below.)
         if first_skip != None and pos >= 0 and text[pos:pos + 1] in first_skip:
             return None
-        return match_bytecode(bytecode, text, named_groups, group_count, start_index = pos, end_index = endpos, has_case_insensitive = has_case_insensitive, opt = opt, first_skip = first_skip, visit_limit = visit_limit)
+        n = len(text)
+        if endpos == None or endpos > n:
+            endpos = n
+        elif endpos < 0:
+            endpos = 0
+        if pos < 0 or pos > n:
+            pos = 0 if pos < 0 else n
+        if alt_dispatch != None:
+            regs = match_alt_regs(alt_dispatch, text, group_count, start_index = pos, end_index = endpos)
+        else:
+            regs = match_regs(bytecode, text, group_count, start_index = pos, end_index = endpos, has_case_insensitive = has_case_insensitive, opt = opt, first_skip = first_skip, visit_limit = visit_limit)
+        if not regs:
+            return None
+        return MatchObject(text, regs, self_ref[0], pos, endpos)
+
+    def _match_end(text, pos = 0, endpos = None):
+        if first_skip != None and pos >= 0 and text[pos:pos + 1] in first_skip:
+            return None
+        n = len(text)
+        if endpos == None or endpos > n:
+            endpos = n
+        elif endpos < 0:
+            endpos = 0
+        if pos < 0 or pos > n:
+            pos = 0 if pos < 0 else n
+        if alt_dispatch != None:
+            regs = match_alt_regs(alt_dispatch, text, group_count, start_index = pos, end_index = endpos)
+        else:
+            regs = match_regs(bytecode, text, group_count, start_index = pos, end_index = endpos, has_case_insensitive = has_case_insensitive, opt = opt, first_skip = first_skip, visit_limit = visit_limit)
+        if not regs:
+            return None
+        return regs[1]
 
     def _fullmatch(text, pos = 0, endpos = None):
         # The same early reject as in _match.
         if first_skip != None and pos >= 0 and text[pos:pos + 1] in first_skip:
             return None
-        return fullmatch_bytecode(bytecode, text, named_groups, group_count, start_index = pos, end_index = endpos, has_case_insensitive = has_case_insensitive, opt = opt, first_skip = first_skip, visit_limit = visit_limit)
+        n = len(text)
+        if endpos == None or endpos > n:
+            endpos = n
+        elif endpos < 0:
+            endpos = 0
+        if pos < 0 or pos > n:
+            pos = 0 if pos < 0 else n
+        if alt_dispatch != None:
+            regs = fullmatch_alt_regs(alt_dispatch, text, group_count, start_index = pos, end_index = endpos)
+        else:
+            regs = fullmatch_regs(bytecode, text, group_count, start_index = pos, end_index = endpos, has_case_insensitive = has_case_insensitive, opt = opt, first_skip = first_skip, visit_limit = visit_limit)
+        if not regs:
+            return None
+        return MatchObject(text, regs, self_ref[0], pos, endpos)
 
-    return struct(
+    compiled = struct(
         search = _search,
         match = _match,
+        match_end = _match_end,
         fullmatch = _fullmatch,
         bytecode = bytecode,
         named_groups = named_groups,
+        gid_to_name = {gid: name for name, gid in named_groups.items()},
         group_count = group_count,
         pattern = pattern,
         has_case_insensitive = has_case_insensitive,
         opt = opt,
+        alt_dispatch = alt_dispatch,
         first_skip = first_skip,
         visit_limit = visit_limit,
     )
+    self_ref[0] = compiled
+    return compiled
 
 def search(pattern, text, flags = 0, pos = 0, endpos = None):
     """Scan through string looking for the first location where the regex pattern produces a match.
@@ -108,8 +181,8 @@ def search(pattern, text, flags = 0, pos = 0, endpos = None):
       A MatchObject containing the match results, or None if no match was found.
       See `compile` for details on MatchObject.
     """
-    compiled = compile(pattern, flags = flags)
-    return search_bytecode(compiled.bytecode, text, compiled.named_groups, compiled.group_count, start_index = pos, end_index = endpos, has_case_insensitive = compiled.has_case_insensitive, opt = compiled.opt, first_skip = compiled.first_skip, visit_limit = compiled.visit_limit)
+    compiled = compile(pattern, flags = flags) if type(pattern) == _STRING_TYPE else pattern
+    return compiled.search(text, pos, endpos)
 
 def match(pattern, text, flags = 0, pos = 0, endpos = None):
     """Try to apply the pattern at the start of the string.
@@ -125,13 +198,8 @@ def match(pattern, text, flags = 0, pos = 0, endpos = None):
       A MatchObject containing the match results, or None if no match was found.
       See `compile` for details on MatchObject.
     """
-    compiled = compile(pattern, flags = flags)
-    first_skip = compiled.first_skip
-
-    # The same early reject as in compile()'s match().
-    if first_skip != None and pos >= 0 and text[pos:pos + 1] in first_skip:
-        return None
-    return match_bytecode(compiled.bytecode, text, compiled.named_groups, compiled.group_count, start_index = pos, end_index = endpos, has_case_insensitive = compiled.has_case_insensitive, opt = compiled.opt, first_skip = first_skip, visit_limit = compiled.visit_limit)
+    compiled = compile(pattern, flags = flags) if type(pattern) == _STRING_TYPE else pattern
+    return compiled.match(text, pos, endpos)
 
 def fullmatch(pattern, text, flags = 0, pos = 0, endpos = None):
     """Try to apply the pattern to the entire string.
@@ -147,13 +215,8 @@ def fullmatch(pattern, text, flags = 0, pos = 0, endpos = None):
       A MatchObject containing the match results, or None if no match was found.
       See `compile` for details on MatchObject.
     """
-    compiled = compile(pattern, flags = flags)
-    first_skip = compiled.first_skip
-
-    # The same early reject as in compile()'s match().
-    if first_skip != None and pos >= 0 and text[pos:pos + 1] in first_skip:
-        return None
-    return fullmatch_bytecode(compiled.bytecode, text, compiled.named_groups, compiled.group_count, start_index = pos, end_index = endpos, has_case_insensitive = compiled.has_case_insensitive, opt = compiled.opt, first_skip = first_skip, visit_limit = compiled.visit_limit)
+    compiled = compile(pattern, flags = flags) if type(pattern) == _STRING_TYPE else pattern
+    return compiled.fullmatch(text, pos, endpos)
 
 # buildifier: disable=list-append
 def _find_all_regs(compiled, text, limit = 0):
@@ -176,6 +239,7 @@ def _find_all_regs(compiled, text, limit = 0):
     group_count = compiled.group_count
     has_case_insensitive = compiled.has_case_insensitive
     opt = compiled.opt
+    alt_dispatch = compiled.alt_dispatch
     first_skip = compiled.first_skip
     visit_limit = compiled.visit_limit
 
@@ -189,12 +253,12 @@ def _find_all_regs(compiled, text, limit = 0):
 
     # At most len(text) + 1 empty and len(text) non-empty matches, plus the final
     # failed search.
-    for _ in range(2 * len(text) + 2):
-        if limit > 0 and len(all_regs) >= limit:
-            break
-
+    max_iters = 2 * len(text) + 2
+    if limit > 0 and limit < max_iters:
+        max_iters = limit
+    for _ in range(max_iters):
         # Use search_regs to avoid creating a MatchObject per match.
-        regs = search_regs(bytecode, text, group_count, start_index = start_index, has_case_insensitive = has_case_insensitive, opt = opt, input_lower = input_lower, first_skip = first_skip, must_advance = must_advance, visit_limit = visit_limit)
+        regs = search_regs(bytecode, text, group_count, start_index = start_index, has_case_insensitive = has_case_insensitive, opt = opt, input_lower = input_lower, first_skip = first_skip, must_advance = must_advance, visit_limit = visit_limit, alt_dispatch = alt_dispatch)
 
         # regs[0] == -1 should not happen if search_regs returns non-None.
         if not regs or regs[0] == -1:
@@ -303,8 +367,13 @@ def sub(pattern, repl, text, count = 0, flags = 0):
 
     # Pre-parse replacement string if it's a string; otherwise it is a function.
     repl_template = None
+    const_repl = None
     if type(repl) == _STRING_TYPE:
         repl_template = parse_replacement_template(repl, compiled.named_groups, group_count)
+        if not repl_template:
+            const_repl = ""
+        elif len(repl_template) == 1 and type(repl_template[0]) == _STRING_TYPE:
+            const_repl = repl_template[0]
 
     res_parts = []
     last_idx = 0
@@ -316,22 +385,15 @@ def sub(pattern, repl, text, count = 0, flags = 0):
         res_parts += [text[last_idx:match_start]]
 
         # Calculate replacement
-        if repl_template == None:
+        if const_repl != None:
+            replacement = const_repl
+        elif repl_template == None:
             # Slow path: Create proper match object using vm.MatchObject.
             # Like Python, pos/endpos describe the whole sub() call.
             m = MatchObject(text, regs, compiled, 0, text_len)
             replacement = repl(m)
         else:
-            # Construct groups tuple only if needed
-            groups = []
-            for i in range(1, group_count + 1):
-                s = regs[i * 2]
-                e = regs[i * 2 + 1]
-                if s == -1:
-                    groups += [None]
-                else:
-                    groups += [text[s:e]]
-            replacement = expand_template(repl_template, text[match_start:match_end], tuple(groups))
+            replacement = expand_template(repl_template, text, regs)
 
         res_parts += [replacement]
         last_idx = match_end
@@ -379,3 +441,76 @@ def split(pattern, text, maxsplit = 0, flags = 0):
 
     res_parts += [text[last_idx:]]
     return res_parts
+
+# buildifier: disable=list-append
+def scanner(rules, flags = 0):
+    """Compiles an ordered list of (tag, pattern) rules into a fast first-char-dispatched lexer.
+
+    Rules are tried in order at each position, like a top-level alternation, but
+    dispatched in O(1) by the current character and without allocating MatchObjects.
+
+    Args:
+      rules: A list of (tag, pattern) tuples, where `tag` is any value (pass
+        `None` to match and skip tokens in `scan()`) and `pattern` is a regex
+        string or compiled regex object.
+      flags: Default regex flags applied to string patterns.
+
+    Returns:
+      A struct with:
+      - scan(text, pos=0, endpos=None): Repeatedly matches rules from `pos` to
+        `endpos`, returning `(tokens, next_pos)` where `tokens` is a list of
+        `(tag, start, end)` tuples (omitting rules whose `tag` is `None`) and
+        `next_pos` is the index where scanning stopped (equals `endpos` if all
+        input was consumed). Stops if no rule matches or a rule matches empty.
+      - match(text, pos=0, endpos=None): Matches a single rule at `pos`,
+        returning `(tag, end)` or `None`.
+    """
+    by_char = {}
+    non_ascii = []
+    empty_rules = []
+
+    for tag, pattern in rules:
+        prog = compile(pattern, flags = flags) if type(pattern) == _STRING_TYPE else pattern
+        first, matches_non_ascii, can_match_empty = compute_first_chars(prog.bytecode)
+        entry = build_scanner_rule(tag, prog, first, matches_non_ascii, can_match_empty)
+        if can_match_empty:
+            empty_rules += [(tag, prog)]
+        if matches_non_ascii or can_match_empty:
+            non_ascii += [entry]
+        if first == None or can_match_empty:
+            for c in CHR_LOOKUP.elems():
+                if c in by_char:
+                    by_char[c] += [entry]
+                else:
+                    by_char[c] = [entry]
+        else:
+            for c in first:
+                if c in by_char:
+                    by_char[c] += [entry]
+                else:
+                    by_char[c] = [entry]
+
+    def _scan(text, pos = 0, endpos = None):
+        n = len(text)
+        if endpos == None or endpos > n:
+            endpos = n
+        elif endpos < 0:
+            endpos = 0
+        if pos < 0 or pos > n:
+            pos = 0 if pos < 0 else n
+        return scan_scanner_rules(by_char, non_ascii, text, pos, endpos)
+
+    def _match(text, pos = 0, endpos = None):
+        n = len(text)
+        if endpos == None or endpos > n:
+            endpos = n
+        elif endpos < 0:
+            endpos = 0
+        if pos < 0 or pos > n:
+            pos = 0 if pos < 0 else n
+        return match_scanner_rule(by_char, non_ascii, empty_rules, text, pos, endpos)
+
+    return struct(
+        scan = _scan,
+        match = _match,
+    )

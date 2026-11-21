@@ -54,3 +54,8 @@ repos:
     rev: v1.35.3
     hooks:
       - id: typos
+        exclude: |
+          (?x)^(
+            re/tests/test_fowler\.bzl|
+            re/tests/test_re2_search\.bzl
+          )$

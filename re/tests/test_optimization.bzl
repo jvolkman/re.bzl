@@ -3,7 +3,7 @@ Tests for fast-path repetition optimizations.
 """
 
 load("@rules_testing//lib:unit_test.bzl", "unit_test")
-load("//re:re.bzl", "compile", "findall", "match", "search", "split", "sub")
+load("//re:re.bzl", "compile", "findall", "finditer", "match", "search", "split", "sub")
 load("//re/tests:utils.bzl", "assert_eq", "assert_span", "run_suite")
 
 def _test_optimization(env):
@@ -135,6 +135,61 @@ def _run_search_end_anchored_tests(env):
     assert_span(env, search(r"1*?2$", "12 12"), (3, 5), "search 1*?2$")
     assert_eq(env, findall(r"(?i)\s*a$", "a A"), [" A"], "findall (?i)\\s*a$")
 
+    # Short endpos (< len(suffix)) and prefix search with endpos / misses.
+    assert_span(env, compile("a*a$").search("a", 0, 0), None, "search a*a$ with endpos < len(suffix)")
+    assert_span(env, compile("a*a$").match("a", 0, 0), None, "match a*a$ with endpos < len(suffix)")
+    assert_span(env, compile(r"needle\d+").search("needle123", 0, 5), None, "prefix search respects endpos")
+    assert_span(env, compile("needle").search("haystack"), None, "prefix search miss returns None")
+    assert_span(env, compile("a[ab]*c$").search("aaabc", 1), (1, 5), "end-anchored search with overlapping prefix and pos")
+
+    # prefix_set followed by an OP_GREEDY_LOOP still builds opt.
+    p_set_loop = compile(r"^\d[a-z]*b")
+    assert_eq(env, p_set_loop.opt != None, True, "prefix_set + OP_GREEDY_LOOP should produce opt")
+    assert_span(env, p_set_loop.match("1abcb"), (0, 5), "match ^\\d[a-z]*b")
+
+    # Negated-set and dot fast paths (`#[^\n]*`, `#.*`, `\S+`, `\D+`, `[^"\\]+`, `([^:]*):(.*)`).
+    p_comment = compile(r"#[^\n]*")
+    assert_eq(env, p_comment.opt != None, True, "#[^\\n]* should produce opt")
+    assert_span(env, p_comment.match("# hello\nnext"), (0, 7), "match #[^\\n]*")
+    assert_span(env, p_comment.search("x # hello\nnext"), (2, 9), "search #[^\\n]*")
+    assert_span(env, compile(r"#.*").match("# hello\nnext"), (0, 7), "match #.*")
+    assert_span(env, compile(r"[^\"\\]+").match("hello\\world"), (0, 5), "match [^\"\\\\]+")
+    assert_span(env, compile(r"[^\"\\]+").search("\"abc\\d"), (1, 4), "search [^\"\\\\]+")
+    assert_span(env, compile(r"(?i)[^a]*a").search("xyzABC"), (0, 4), "search (?i)[^a]*a")
+    assert_span(env, compile(r"[^a]*a$").search("bcca"), (0, 4), "search [^a]*a$")
+    assert_span(env, compile(r"\D+").fullmatch("abc世界"), (0, len("abc世界")), "fullmatch \\D+ with non-ASCII")
+    assert_eq(env, findall(r"\D+", "12abc34世界56"), ["abc", "世界"], "findall \\D+ with non-ASCII")
+    assert_span(env, search(r"(?m)[^\n]*$", "abc\ndef"), (0, 3), "search (?m)[^\\n]*$")
+    assert_span(env, search(r"(?m)[^a]*$", "b\na"), (0, 1), "search (?m)[^a]*$ gives back newline")
+    m_kv = search(r"([^:]*):(.*)", "key:value\nnext")
+    assert_eq(env, m_kv.groups() if m_kv else None, ("key", "value"), "search ([^:]*):(.*)")
+
+    # Top-level alternation first-char branch dispatch (including named-group tokenizers).
+    tok_re = compile(r"(?P<WS>[ \t]+)|(?P<COMMENT>#[^\n]*)|(?P<KEY>[A-Za-z_][A-Za-z0-9_\-]*)|(?P<EQ>=)|(?P<NUM>\d+)")
+    assert_eq(env, tok_re.alt_dispatch != None, True, "named-group alternation should build alt_dispatch")
+    toks = [(m.lastgroup, m.group(0)) for m in finditer(tok_re, "key = 42 # note")]
+    assert_eq(
+        env,
+        toks,
+        [("KEY", "key"), ("WS", " "), ("EQ", "="), ("WS", " "), ("NUM", "42"), ("WS", " "), ("COMMENT", "# note")],
+        "finditer with alt_dispatch named-group tokenizer",
+    )
+    assert_span(env, compile("a|ab").match("ab"), (0, 1), "alt_dispatch match respects branch priority")
+    assert_span(env, compile("a|ab").fullmatch("ab"), (0, 2), "alt_dispatch fullmatch tries later branch")
+    assert_span(env, compile("^a|b").search("xab"), (2, 3), "alt_dispatch search respects anchored branch")
+    assert_span(env, compile("(?i)true|false").search("xxFALSE"), (2, 7), "alt_dispatch CI search")
+    assert_span(env, compile("a|[^a]b").search("世界b"), (len("世界b") - 2, len("世界b")), "alt_dispatch non-ASCII branch")
+    assert_span(env, compile("a|b").match(""), None, "alt_dispatch match on empty string")
+    assert_span(env, compile("a|b").fullmatch(""), None, "alt_dispatch fullmatch on empty string")
+
+    # alt_dispatch fallback when two branches share a first char and have inner/outer captures.
+    p_shared = compile(r"(?P<AB>a(b))|(?P<AC>a(c))|(?P<D>d+)")
+    assert_eq(env, p_shared.alt_dispatch != None, True, "shared-first-char alternation builds alt_dispatch")
+    m_ac = p_shared.match("ac")
+    assert_eq(env, (m_ac.lastgroup, m_ac.lastindex, m_ac.groups()), ("AC", 3, (None, None, "ac", "c", None)), "alt_dispatch shared first char fallback captures")
+    m_d = p_shared.search("xxddd", 1, 4)
+    assert_eq(env, (m_d.span(), m_d.lastgroup, m_d.group("D")), ((2, 4), "D", "dd"), "alt_dispatch search with pos/endpos")
+
 def _run_search_suffix_endpos_tests(env):
     """Checks that the suffix search fast path honors endpos."""
     prog = compile("[ab]*c")
@@ -167,6 +222,16 @@ def _run_first_skip_tests(env):
     assert_span(env, search("[xy]", "aaa"), None, "search [xy] without candidates")
     assert_span(env, compile("[bc]").search("aab", 0, 2), None, "search [bc] with endpos before the candidate")
     assert_eq(env, findall("[0-9]+", "a1b22c333"), ["1", "22", "333"], "findall [0-9]+")
+    assert_eq(env, findall(r"\d+", "世界123abc45"), ["123", "45"], "findall \\d+ over non-ASCII text")
+
+    # Negated simple sets compute first_skip from their excluded ASCII characters.
+    nonspace_skip = compile(r"\S+").first_skip
+    assert_eq(env, " " in nonspace_skip and "\n" in nonspace_skip, True, "\\S+ first_skip includes whitespace")
+    assert_eq(env, "a" in nonspace_skip, False, "\\S+ first_skip excludes non-whitespace")
+    assert_eq(env, findall(r"\S+", "  foo\t世界\nbar "), ["foo", "世界", "bar"], "findall \\S+ with non-ASCII")
+    ci_neg_skip = compile("(?i)[^a]").first_skip
+    assert_eq(env, "a" in ci_neg_skip and "A" in ci_neg_skip, True, "(?i)[^a] first_skip includes a/A")
+    assert_eq(env, "b" in ci_neg_skip, False, "(?i)[^a] first_skip excludes b")
 
     # match()/fullmatch() reject in O(1) when the first char cannot begin a match.
     prog = compile("[ab]c")
@@ -200,11 +265,15 @@ def _run_windowed_strip_tests(env):
         assert_span(env, match("xa*", "x" + run), (0, n + 1), "match xa* over %d chars" % n)
         assert_span(env, compile("xa*").match("x" + run + "aa", 0, n + 1), (0, n + 1), "match xa* up to endpos over %d chars" % n)
 
-        # A greedy loop in the NFA (lstrip). Its thread steps once per character, so
-        # the longest run is skipped.
-        if n < 2000:
-            assert_span(env, search("(x)a*$", "x" + run), (0, n + 1), "search (x)a*$ over %d chars" % n)
-            assert_span(env, match("(x)(?i:a*)$", "x" + run.upper()), (0, n + 1), "match (x)(?i:a*)$ over %d chars" % n)
+        # A greedy loop in the NFA (lstrip) skips directly to the end of its run.
+        assert_span(env, search("(x)a*$", "x" + run), (0, n + 1), "search (x)a*$ over %d chars" % n)
+        assert_span(env, match("(x)(?i:a*)$", "x" + run.upper()), (0, n + 1), "match (x)(?i:a*)$ over %d chars" % n)
+
+        # Negated-set loops across window boundaries (1-stop, 2-stop, and complement lstrip).
+        assert_span(env, match(r"#[^\n]*", "#" + run + "\n"), (0, n + 1), "match #[^\\n]* over %d chars" % n)
+        assert_span(env, match(r"[^\"\\]+", run + "\\"), (0, n), "match [^\"\\\\]+ over %d chars" % n)
+        assert_span(env, match(r"\D+", run + "9"), (0, n), "match \\D+ over %d chars" % n)
+        assert_span(env, match(r"a([^x]*)b", "a" + run + "b"), (0, n + 2), "NFA OP_NEG_GREEDY_LOOP over %d chars" % n)
 
 def _run_incomplete_set_tests(env):
     """Checks that the fast paths don't use a set's all_chars when it's incomplete.

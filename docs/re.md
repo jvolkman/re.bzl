@@ -29,9 +29,10 @@ like the top-level functions but with the pattern pre-compiled.
 **RETURNS**
 
 A struct containing the compiled bytecode and methods:
-- search(text): Scans text for a match. Returns a MatchObject or None.
-- match(text): Checks for a match at the beginning of text. Returns a MatchObject or None.
-- fullmatch(text): Checks for a match of the entire text. Returns a MatchObject or None.
+- search(text, pos=0, endpos=None): Scans text for a match. Returns a MatchObject or None.
+- match(text, pos=0, endpos=None): Checks for a match at pos. Returns a MatchObject or None.
+- match_end(text, pos=0, endpos=None): Like match(), but returns the integer end index or None without allocating a MatchObject.
+- fullmatch(text, pos=0, endpos=None): Checks for a match of the entire slice text[pos:endpos]. Returns a MatchObject or None.
 - pattern: The pattern string.
 - group_count: The number of capturing groups.
 
@@ -177,6 +178,42 @@ Try to apply the pattern at the start of the string.
 
 A MatchObject containing the match results, or None if no match was found.
 See `compile` for details on MatchObject.
+
+
+<a id="re.scanner"></a>
+
+## re.scanner
+
+<pre>
+load("@re.bzl", "re")
+
+re.scanner(<a href="#re.scanner-rules">rules</a>, <a href="#re.scanner-flags">flags</a>)
+</pre>
+
+Compiles an ordered list of (tag, pattern) rules into a fast first-char-dispatched lexer.
+
+Rules are tried in order at each position, like a top-level alternation, but
+dispatched in O(1) by the current character and without allocating MatchObjects.
+
+
+**PARAMETERS**
+
+
+| Name  | Description | Default Value |
+| :------------- | :------------- | :------------- |
+| <a id="re.scanner-rules"></a>rules |  A list of (tag, pattern) tuples, where `tag` is any value (pass `None` to match and skip tokens in `scan()`) and `pattern` is a regex string or compiled regex object.   |  none |
+| <a id="re.scanner-flags"></a>flags |  Default regex flags applied to string patterns.   |  `0` |
+
+**RETURNS**
+
+A struct with:
+- scan(text, pos=0, endpos=None): Repeatedly matches rules from `pos` to
+  `endpos`, returning `(tokens, next_pos)` where `tokens` is a list of
+  `(tag, start, end)` tuples (omitting rules whose `tag` is `None`) and
+  `next_pos` is the index where scanning stopped (equals `endpos` if all
+  input was consumed). Stops if no rule matches or a rule matches empty.
+- match(text, pos=0, endpos=None): Matches a single rule at `pos`,
+  returning `(tag, end)` or `None`.
 
 
 <a id="re.search"></a>

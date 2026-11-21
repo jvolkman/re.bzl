@@ -36,6 +36,15 @@ is_exact = re.fullmatch(r"v\d+\.\d+", "v1.2") # <MatchObject> or None
 prog = re.compile(r"\d+")
 if prog.search("123"):
     print("Found digits")
+
+# Fast first-character-dispatched lexer (no MatchObject allocation)
+lexer = re.scanner([
+    (None, r"[ \t]+"),       # skip whitespace
+    ("IDENT", r"[A-Za-z_]\w*"),
+    ("NUM", r"\d+"),
+    ("EQ", r"="),
+])
+tokens, next_pos = lexer.scan("x = 42")  # [("IDENT", 0, 1), ("EQ", 2, 3), ("NUM", 4, 6)], 6
 ```
 
 ## Performance and Feasibility
