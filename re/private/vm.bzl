@@ -14,6 +14,7 @@ load(
     "OP_GREEDY_LOOP",
     "OP_JUMP",
     "OP_MATCH",
+    "OP_NEG_GREEDY_LOOP",
     "OP_NOT_WORD_BOUNDARY",
     "OP_SAVE",
     "OP_SET",
@@ -131,6 +132,62 @@ def _windowed_rstrip(s, chars, end, min_start = 0):
             break
         if size < _MAX_WINDOW_SIZE:
             size *= 4
+    return end - pos
+
+def _scan_negated_fwd(s, stop_chars, complement, start, end):
+    """Returns length of prefix of s[start:end] containing no char in stop_chars."""
+    if start >= end:
+        return 0
+    if len(stop_chars) == 1:
+        idx = s.find(stop_chars, start, end)
+        return (idx - start) if idx != -1 else (end - start)
+    if complement == None:
+        best = end
+        for c in stop_chars.elems():
+            idx = s.find(c, start, best)
+            if idx != -1:
+                best = idx
+                if best == start:
+                    return 0
+        return best - start
+
+    # Large negated set (e.g. \D, \W): strip ASCII complement in windows,
+    # stepping past any non-ASCII char (>255) which matches the negated set.
+    pos = start
+    for _ in range(end - start + 1):
+        if pos >= end:
+            break
+        pos += _windowed_lstrip(s, complement, pos, end)
+        if pos >= end or s[pos] in stop_chars:
+            break
+        pos += 1
+    return pos - start
+
+def _scan_negated_bwd(s, stop_chars, complement, end, min_start = 0):
+    """Returns length of suffix of s[min_start:end] containing no char in stop_chars."""
+    if end <= min_start:
+        return 0
+    if len(stop_chars) == 1:
+        idx = s.rfind(stop_chars, min_start, end)
+        return (end - idx - 1) if idx != -1 else (end - min_start)
+    if complement == None:
+        best = min_start
+        for c in stop_chars.elems():
+            idx = s.rfind(c, best, end)
+            if idx != -1:
+                best = idx + 1
+                if best == end:
+                    return 0
+        return end - best
+
+    pos = end
+    for _ in range(end - min_start + 1):
+        if pos <= min_start:
+            break
+        pos -= _windowed_rstrip(s, complement, pos, min_start)
+        if pos <= min_start or s[pos - 1] in stop_chars:
+            break
+        pos -= 1
     return end - pos
 
 # Types
@@ -422,6 +479,26 @@ def execute(instructions, input_str, num_regs, start_index = 0, end_index = None
                                 next_threads_dict[key] = True
                                 next_threads += [(exit_pc, regs, resume_idx)]
                             break
+                    elif itype == OP_NEG_GREEDY_LOOP:
+                        # Optimized disjoint [^...]* or .* loop: skip straight to exit_pc via find().
+                        last_end = loop_cache.get(pc, -1)
+                        if last_end >= char_idx:
+                            match_len = last_end - char_idx
+                        else:
+                            stop_chars, complement = inst[1]
+                            match_len = _scan_negated_fwd(input_str, stop_chars, complement, char_idx, input_len)
+                            loop_cache[pc] = char_idx + match_len
+
+                        if match_len == 0:
+                            pc = inst[2]
+                        else:
+                            exit_pc = inst[2]
+                            resume_idx = char_idx + match_len
+                            key = exit_pc if resume_idx == next_idx else (exit_pc, resume_idx)
+                            if key not in next_threads_dict:
+                                next_threads_dict[key] = True
+                                next_threads += [(exit_pc, regs, resume_idx)]
+                            break
                     elif itype == OP_UNGREEDY_LOOP:
                         if visited[pc] == visited_gen:
                             # First visit: epsilon exit (higher priority).
@@ -653,17 +730,24 @@ def search_regs(bytecode, text, group_count, start_index = 0, end_index = None, 
     if opt and not must_advance:
         # Only `...prefix [set]* suffix$` and `...prefix [set]+ suffix$` are handled here.
         # (`(?i:[ab])[ab]*` has equal sets but isn't `[ab]+`.)
-        prefix_set_is_plus = opt.prefix_set_chars != None and opt.prefix_set_chars == opt.greedy_set_chars and opt.is_prefix_set_case_insensitive == opt.is_greedy_case_insensitive
+        prefix_set_is_plus = (opt.prefix_set_chars != None and
+                              opt.prefix_set_chars == opt.greedy_set_chars and
+                              opt.is_prefix_set_case_insensitive == opt.is_greedy_case_insensitive and
+                              opt.is_prefix_set_negated == opt.is_greedy_negated)
         if opt.is_anchored_end and not has_case_insensitive and (opt.prefix_set_chars == None or prefix_set_is_plus):
             # Case: ...sets...suffix$
             if effective_len >= len(opt.suffix) and text.startswith(opt.suffix, effective_len - len(opt.suffix)):
                 # Work backwards from the suffix
                 before_suffix_idx = effective_len - len(opt.suffix)
 
-                # Use rstrip to find where the greedy set starts
+                # Scan backwards to find where the greedy set starts
                 greedy_start = before_suffix_idx
                 if opt.greedy_set_chars != None:
-                    match_len = _windowed_rstrip(text, opt.greedy_set_chars, before_suffix_idx, start_index + len(opt.prefix))
+                    if opt.is_greedy_negated:
+                        stop_chars, complement = opt.greedy_neg_scan
+                        match_len = _scan_negated_bwd(text, stop_chars, complement, before_suffix_idx, start_index + len(opt.prefix))
+                    else:
+                        match_len = _windowed_rstrip(text, opt.greedy_set_chars, before_suffix_idx, start_index + len(opt.prefix))
                     greedy_start = before_suffix_idx - match_len
 
                 match_start = greedy_start
@@ -721,13 +805,17 @@ def search_regs(bytecode, text, group_count, start_index = 0, end_index = None, 
                 # The leftmost match must start after start_index.
                 search_start = found_idx
                 if opt.greedy_set_chars != None:
-                    loop_text = input_lower if opt.is_greedy_case_insensitive else text
-                    match_len = _windowed_rstrip(loop_text, opt.greedy_set_chars, found_idx, start_index)
+                    if opt.is_greedy_negated:
+                        stop_chars, complement = opt.greedy_neg_scan
+                        match_len = _scan_negated_bwd(text, stop_chars, complement, found_idx, start_index)
+                    else:
+                        loop_text = input_lower if opt.is_greedy_case_insensitive else text
+                        match_len = _windowed_rstrip(loop_text, opt.greedy_set_chars, found_idx, start_index)
                     search_start = found_idx - match_len
 
                 if opt.prefix_set_chars != None and search_start > start_index:
                     set_text = input_lower if opt.is_prefix_set_case_insensitive else text
-                    if set_text[search_start - 1] in opt.prefix_set_chars:
+                    if (set_text[search_start - 1] in opt.prefix_set_chars) != opt.is_prefix_set_negated:
                         search_start -= 1
 
                 # Now try a real search starting at search_start
@@ -736,8 +824,12 @@ def search_regs(bytecode, text, group_count, start_index = 0, end_index = None, 
                     if opt.is_suffix_disjoint:
                         can_bypass = True
                     elif opt.is_ungreedy_loop:
-                        loop_text = input_lower if opt.is_greedy_case_insensitive else text
-                        strip_len = _windowed_lstrip(loop_text, opt.greedy_set_chars, search_start, found_idx)
+                        if opt.is_greedy_negated:
+                            stop_chars, complement = opt.greedy_neg_scan
+                            strip_len = _scan_negated_fwd(text, stop_chars, complement, search_start, found_idx)
+                        else:
+                            loop_text = input_lower if opt.is_greedy_case_insensitive else text
+                            strip_len = _windowed_lstrip(loop_text, opt.greedy_set_chars, search_start, found_idx)
                         if search_start + strip_len >= found_idx:
                             can_bypass = True
 
@@ -763,7 +855,7 @@ def search_regs(bytecode, text, group_count, start_index = 0, end_index = None, 
 
             return None
         elif opt.suffix == "" and opt.prefix_set_chars != None and not opt.is_anchored_end and first_skip != None:
-            # Unanchored `[set]`, `[set]+`, or `[set1][set2]*` with no literal prefix/suffix:
+            # Unanchored `[set]`, `[set]+`, `[^set]+`, or `[set1][set2]*` with no literal prefix/suffix:
             # jump straight to the next candidate via first_skip, then consume any greedy loop.
             pos = start_index
             set_text = input_lower if opt.is_prefix_set_case_insensitive else text
@@ -774,10 +866,14 @@ def search_regs(bytecode, text, group_count, start_index = 0, end_index = None, 
                 pos += _windowed_lstrip(text, first_skip, pos, effective_len)
                 if pos >= effective_len:
                     return None
-                if set_text[pos] in opt.prefix_set_chars:
+                if (set_text[pos] in opt.prefix_set_chars) != opt.is_prefix_set_negated:
                     match_end = pos + 1
                     if opt.greedy_set_chars != None and not opt.is_ungreedy_loop:
-                        match_end += _windowed_lstrip(loop_text, opt.greedy_set_chars, match_end, effective_len)
+                        if opt.is_greedy_negated:
+                            stop_chars, complement = opt.greedy_neg_scan
+                            match_end += _scan_negated_fwd(text, stop_chars, complement, match_end, effective_len)
+                        else:
+                            match_end += _windowed_lstrip(loop_text, opt.greedy_set_chars, match_end, effective_len)
                     if group_count == 0:
                         return [pos, match_end, -1]
                     regs = [-1] * ((group_count + 1) * 2 + 1)
@@ -841,7 +937,7 @@ def match_regs(bytecode, text, group_count, start_index = 0, end_index = None, h
                     c = text[match_end]
                     if opt.is_prefix_set_case_insensitive:
                         c = input_lower[match_end] if input_lower != None else c.lower()
-                    if c in opt.prefix_set_chars:
+                    if (c in opt.prefix_set_chars) != opt.is_prefix_set_negated:
                         match_end += 1
                     else:
                         fast_path_ok = False
@@ -868,7 +964,11 @@ def match_regs(bytecode, text, group_count, start_index = 0, end_index = None, h
                             suffix_ok = text.startswith(opt.suffix, suffix_start)
                     if suffix_ok:
                         if opt.greedy_set_chars != None:
-                            strip_len = _windowed_lstrip(loop_text, opt.greedy_set_chars, match_end, suffix_start, lower = loop_lower)
+                            if opt.is_greedy_negated:
+                                stop_chars, complement = opt.greedy_neg_scan
+                                strip_len = _scan_negated_fwd(text, stop_chars, complement, match_end, suffix_start)
+                            else:
+                                strip_len = _windowed_lstrip(loop_text, opt.greedy_set_chars, match_end, suffix_start, lower = loop_lower)
                             if match_end + strip_len >= suffix_start:
                                 match_end = effective_len
                             else:
@@ -896,7 +996,11 @@ def match_regs(bytecode, text, group_count, start_index = 0, end_index = None, h
                     if found_idx != -1:
                         # Check if everything between match_end and found_idx is in greedy_set
                         if opt.greedy_set_chars != None:
-                            strip_len = _windowed_lstrip(loop_text, opt.greedy_set_chars, match_end, found_idx, lower = loop_lower)
+                            if opt.is_greedy_negated:
+                                stop_chars, complement = opt.greedy_neg_scan
+                                strip_len = _scan_negated_fwd(text, stop_chars, complement, match_end, found_idx)
+                            else:
+                                strip_len = _windowed_lstrip(loop_text, opt.greedy_set_chars, match_end, found_idx, lower = loop_lower)
                             if match_end + strip_len >= found_idx:
                                 match_end = found_idx + suffix_len
                             else:
@@ -911,7 +1015,11 @@ def match_regs(bytecode, text, group_count, start_index = 0, end_index = None, h
                 elif opt.greedy_set_chars != None and not opt.is_ungreedy_loop:
                     # No suffix, not anchored at end: greedy match the rest.
                     # (A lazy loop matches zero iterations here.)
-                    match_end += _windowed_lstrip(loop_text, opt.greedy_set_chars, match_end, effective_len, lower = loop_lower)
+                    if opt.is_greedy_negated:
+                        stop_chars, complement = opt.greedy_neg_scan
+                        match_end += _scan_negated_fwd(text, stop_chars, complement, match_end, effective_len)
+                    else:
+                        match_end += _windowed_lstrip(loop_text, opt.greedy_set_chars, match_end, effective_len, lower = loop_lower)
 
             if fast_path_ok:
                 if group_count == 0:
@@ -984,7 +1092,7 @@ def fullmatch_regs(bytecode, text, group_count, start_index = 0, end_index = Non
                 c = text[match_end]
                 if opt.is_prefix_set_case_insensitive:
                     c = input_lower[match_end] if input_lower != None else c.lower()
-                if c in opt.prefix_set_chars:
+                if (c in opt.prefix_set_chars) != opt.is_prefix_set_negated:
                     match_end += 1
                 else:
                     fast_path_ok = False
@@ -993,9 +1101,13 @@ def fullmatch_regs(bytecode, text, group_count, start_index = 0, end_index = Non
 
         if fast_path_ok:
             if opt.greedy_set_chars != None:
-                loop_lower = opt.is_greedy_case_insensitive and input_lower == None
-                loop_text = input_lower if (opt.is_greedy_case_insensitive and input_lower != None) else text
-                strip_len = _windowed_lstrip(loop_text, opt.greedy_set_chars, match_end, suffix_start, lower = loop_lower)
+                if opt.is_greedy_negated:
+                    stop_chars, complement = opt.greedy_neg_scan
+                    strip_len = _scan_negated_fwd(text, stop_chars, complement, match_end, suffix_start)
+                else:
+                    loop_lower = opt.is_greedy_case_insensitive and input_lower == None
+                    loop_text = input_lower if (opt.is_greedy_case_insensitive and input_lower != None) else text
+                    strip_len = _windowed_lstrip(loop_text, opt.greedy_set_chars, match_end, suffix_start, lower = loop_lower)
                 fast_path_ok = match_end + strip_len >= suffix_start
             else:
                 fast_path_ok = match_end == suffix_start

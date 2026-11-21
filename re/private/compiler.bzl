@@ -16,6 +16,7 @@ load(
     "OP_GREEDY_LOOP",
     "OP_JUMP",
     "OP_MATCH",
+    "OP_NEG_GREEDY_LOOP",
     "OP_NOT_WORD_BOUNDARY",
     "OP_SAVE",
     "OP_SET",
@@ -433,94 +434,99 @@ def _parse_group_start(pattern, i, pattern_len, flags):
         new_flags = (case_insensitive, multiline, dot_all, ungreedy, verbose),
     )
 
+# Stop-char counts up to this limit use repeated native str.find()/rfind();
+# larger negated sets use windowed lstrip/rstrip over the ASCII complement.
+_NEG_FIND_LIMIT = 8
+
+def _build_negated_scan_info(chars, is_ci):
+    """Builds (stop_chars, complement) for scanning a negated simple set."""
+    if is_ci:
+        stop_dict = {}
+        for c in chars.elems():
+            stop_dict[c] = True
+            stop_dict[c.upper()] = True
+        stop_chars = "".join(sorted(stop_dict.keys()))
+    else:
+        stop_chars = chars
+        stop_dict = {c: True for c in chars.elems()}
+
+    if len(stop_chars) <= _NEG_FIND_LIMIT:
+        return stop_chars, None
+    complement = "".join([c for c in _CHR_LOOKUP.elems() if c not in stop_dict])
+    return stop_chars, complement
+
 def _is_disjoint(body_inst, next_inst):
     """Returns True if the body instruction is disjoint from the next instruction."""
     b_type = body_inst[0]  # op
     n_type = next_inst[0]  # op
 
-    # 1. Body must be a simple Set or Char
-    if b_type == OP_ANY or b_type == OP_ANY_NO_NL:
+    # 1. Body must be a simple Set, Char, or OP_ANY_NO_NL ([^\n]).
+    if b_type == OP_ANY:
         return False
 
     b_chars = None
     b_lookup = None
     b_is_case_insensitive = False
+    b_negated = False
 
     if b_type == OP_CHAR:
         b_chars = body_inst[1]  # val
         b_is_case_insensitive = body_inst[2]  # arg1
-
+    elif b_type == OP_ANY_NO_NL:
+        b_chars = "\n"
+        b_lookup = {"\n": True}
+        b_negated = True
     elif b_type == OP_SET:
-        # Check if set is simple
         set_struct = body_inst[1]
-        is_negated = body_inst[3]
-        b_is_case_insensitive = body_inst[2]  # arg1 = is_ci
-        if is_negated or not set_struct.is_simple:
+        if not set_struct.is_simple:
             return False
+        b_is_case_insensitive = body_inst[2]
+        b_negated = body_inst[3]
         b_chars = set_struct.all_chars
         b_lookup = set_struct.lookup
     else:
-        # Complex body (e.g. Group, Any) - not optimizing yet
         return False
 
     # 2. Check Next instruction
-    if n_type == OP_MATCH:
-        # End of pattern is disjoint from any char/set
-        return True
-
-    if n_type == OP_CHAR:
-        n_char = next_inst[1]  # val
-        n_is_ci = next_inst[2]  # arg1 = is_ci
-
-        if b_is_case_insensitive:
-            # Body is lowercased.
-            check_char = n_char if n_is_ci else n_char.lower()
-            if b_lookup:
-                return check_char not in b_lookup
-            return check_char != b_chars
-        elif n_is_ci:
-            # Body is CS, next is CI (stored lowercased): check both cases.
-            for x in (n_char, n_char.upper()):
-                if b_lookup:
-                    if x in b_lookup:
-                        return False
-                elif x == b_chars:
-                    return False
-            return True
-        elif b_lookup:
-            return n_char not in b_lookup
-        else:
-            return n_char != b_chars
-
-    if n_type == OP_SET:
-        n_set = next_inst[1]
-        n_negated = next_inst[3]
-        n_is_ci = next_inst[2]
-        if n_negated or not n_set.is_simple:
-            return False
-        for c in n_set.all_chars.elems():
-            candidates = (c, c.upper()) if n_is_ci else (c,)
-            for x in candidates:
-                check_c = x.lower() if b_is_case_insensitive else x
-                if b_lookup:
-                    if check_c in b_lookup:
-                        return False
-                elif check_c == b_chars:
-                    return False
-        return True
-
-    if n_type == OP_ANCHOR_END:
+    if n_type == OP_MATCH or n_type == OP_ANCHOR_END:
         return True
 
     if n_type == OP_ANCHOR_LINE_END:
         # A multiline `$` also matches before a "\n", so a loop that can consume one
         # may have to give it back: `(?m)\s*$` matches " " in " \n x".
-        return "\n" not in b_chars
+        has_nl = "\n" in b_lookup if b_lookup else (b_chars == "\n")
+        return has_nl if b_negated else not has_nl
+
+    if n_type == OP_CHAR:
+        n_char = next_inst[1]
+        n_is_ci = next_inst[2]
+        candidates = (n_char, n_char.upper()) if n_is_ci else (n_char,)
+        for x in candidates:
+            check_c = x.lower() if b_is_case_insensitive else x
+            in_b = (check_c in b_lookup) if b_lookup else (check_c == b_chars)
+
+            # For positive body, disjoint means NOT in b. For negated body, disjoint means IN b (excluded).
+            if in_b != b_negated:
+                return False
+        return True
+
+    if n_type == OP_SET:
+        n_set = next_inst[1]
+        if n_set.is_simple and not next_inst[3]:
+            n_is_ci = next_inst[2]
+            for c in n_set.all_chars.elems():
+                candidates = (c, c.upper()) if n_is_ci else (c,)
+                for x in candidates:
+                    check_c = x.lower() if b_is_case_insensitive else x
+                    in_b = (check_c in b_lookup) if b_lookup else (check_c == b_chars)
+                    if in_b != b_negated:
+                        return False
+            return True
+        return False
 
     # `^` is not disjoint either: a loop that consumed characters makes it fail where
     # zero iterations would have matched (`a*^` matches "" at 0 in "a").
 
-    # Default unsafe
     return False
 
 def _remap_inst(inst, old_to_new):
@@ -544,7 +550,7 @@ def _remap_inst(inst, old_to_new):
             return (itype, new_val, new_pc1, new_pc2)
         return inst
 
-    if itype == OP_GREEDY_LOOP or itype == OP_UNGREEDY_LOOP:
+    if itype == OP_GREEDY_LOOP or itype == OP_UNGREEDY_LOOP or itype == OP_NEG_GREEDY_LOOP:
         exit_pc = inst[2]  # arg1
         new_exit = old_to_new.get(exit_pc, exit_pc)
         if new_exit != exit_pc:
@@ -571,7 +577,7 @@ def _shift_inst(inst, old_start, delta):
         if mark != None and mark >= old_start:
             mark += delta
         return (OP_SPLIT, mark, pc1, pc2)
-    elif itype == OP_GREEDY_LOOP or itype == OP_UNGREEDY_LOOP:
+    elif itype == OP_GREEDY_LOOP or itype == OP_UNGREEDY_LOOP or itype == OP_NEG_GREEDY_LOOP:
         exit_pc = inst[2]  # arg1
         if exit_pc != None and exit_pc >= old_start:
             return (itype, inst[1], exit_pc + delta, inst[3])  # arg2 = is_ci
@@ -654,9 +660,12 @@ def _optimize_greedy_loops(instructions):
                             exit_check_pc += 1
                         exit_inst = instructions[exit_check_pc] if exit_check_pc < num_insts else instructions[pc2]
                         if _is_disjoint(body_inst, exit_inst):
-                            chars, is_ci = _get_inst_chars(body_inst)
+                            chars, is_ci, is_negated = _get_simple_atom_chars(body_inst)
                             if chars != None:
-                                new_insts += [(OP_GREEDY_LOOP, chars, pc2, is_ci)]
+                                if is_negated:
+                                    new_insts += [(OP_NEG_GREEDY_LOOP, _build_negated_scan_info(chars, is_ci), pc2, None)]
+                                else:
+                                    new_insts += [(OP_GREEDY_LOOP, chars, pc2, is_ci)]
                                 skip = 2
                                 continue
 
@@ -697,7 +706,7 @@ def _optimize_strings(instructions):
         elif itype == OP_SPLIT:
             target = inst[2]  # arg1 = pc1
             target2 = inst[3]  # arg2 = pc2
-        elif itype == OP_GREEDY_LOOP or itype == OP_UNGREEDY_LOOP:
+        elif itype == OP_GREEDY_LOOP or itype == OP_UNGREEDY_LOOP or itype == OP_NEG_GREEDY_LOOP:
             target = inst[2]  # arg1 = exit_pc
 
         if target != None:
@@ -1278,16 +1287,17 @@ def compile_regex(pattern, flags = 0):
     return instructions, named_groups, group_count, has_case_insensitive
 
 def _get_simple_atom_chars(inst):
-    """Returns (chars, is_ci) for an OP_CHAR or simple non-negated OP_SET."""
+    """Returns (chars, is_ci, is_negated) for OP_CHAR, simple OP_SET, or OP_ANY_NO_NL."""
     itype = inst[0]
     if itype == OP_CHAR:
-        return inst[1], inst[2]
+        return inst[1], inst[2], False
+    if itype == OP_ANY_NO_NL:
+        return "\n", False, True
     if itype == OP_SET:
         set_data = inst[1]
-        is_negated = inst[3]
-        if not is_negated and set_data.is_simple:
-            return set_data.all_chars, inst[2]
-    return None, False
+        if set_data.is_simple:
+            return set_data.all_chars, inst[2], inst[3]
+    return None, False, False
 
 def _collect_literal_run(instructions, idx):
     """Collects consecutive OP_CHAR/OP_STRING instructions from idx.
@@ -1318,24 +1328,27 @@ def _collect_literal_run(instructions, idx):
     return lit, False, idx, True
 
 def _match_loop_inst(instructions, idx):
-    """Matches an OP_GREEDY_LOOP, OP_UNGREEDY_LOOP, or simple [set]* / c* loop at idx.
+    """Matches an OP_GREEDY_LOOP, OP_NEG_GREEDY_LOOP, OP_UNGREEDY_LOOP, or simple * loop at idx.
 
-    Returns (chars, is_ci, is_ungreedy, new_idx). chars is None if no loop matched.
+    Returns (chars, is_ci, is_negated, is_ungreedy, new_idx). chars is None if no loop matched.
     """
     num_insts = len(instructions)
     if idx >= num_insts:
-        return None, False, False, idx
+        return None, False, False, False, idx
     inst = instructions[idx]
     itype = inst[0]
     if itype == OP_GREEDY_LOOP or itype == OP_UNGREEDY_LOOP:
-        return inst[1], inst[3], (itype == OP_UNGREEDY_LOOP), idx + 1
+        return inst[1], inst[3], False, (itype == OP_UNGREEDY_LOOP), idx + 1
+    if itype == OP_NEG_GREEDY_LOOP:
+        # stop_chars is already case-expanded, so is_ci is False.
+        return inst[1][0], False, True, False, idx + 1
     if itype == OP_SPLIT and idx + 2 < num_insts and inst[2] == idx + 1 and inst[3] == idx + 3:
         end_inst = instructions[idx + 2]
         if (end_inst[0] == OP_JUMP or end_inst[0] == OP_SPLIT) and end_inst[2] == idx:
-            chars, is_ci = _get_simple_atom_chars(instructions[idx + 1])
+            chars, is_ci, is_negated = _get_simple_atom_chars(instructions[idx + 1])
             if chars != None:
-                return chars, is_ci, False, idx + 3
-    return None, False, False, idx
+                return chars, is_ci, is_negated, False, idx + 3
+    return None, False, False, False, idx
 
 def _skip_save_1(instructions, idx):
     """Advances past OP_SAVE 1 instructions; returns -1 if another capture save is seen."""
@@ -1378,40 +1391,45 @@ def optimize_matcher(instructions):
     # After prefix, check for sets and loops.
     prefix_set_chars = None
     is_prefix_set_case_insensitive = False
+    is_prefix_set_negated = False
     greedy_set_chars = None
     is_greedy_case_insensitive = False
+    is_greedy_negated = False
     is_ungreedy_loop = False
 
     if idx < num_insts:
         inst = instructions[idx]
         itype = inst[0]
-        if itype == OP_CHAR or itype == OP_SET:
-            # Case 1: [set]+ or c+ -> ATOM, SPLIT(idx, idx+2)
+        if itype == OP_CHAR or itype == OP_SET or itype == OP_ANY_NO_NL:
+            # Case 1: [set]+, [^set]+, .+, or c+ -> ATOM, SPLIT(idx, idx+2)
             next_is_plus = (idx + 1 < num_insts and
                             instructions[idx + 1][0] == OP_SPLIT and
                             instructions[idx + 1][2] == idx and
                             instructions[idx + 1][3] == idx + 2)
             if next_is_plus:
-                chars, is_ci = _get_simple_atom_chars(inst)
+                chars, is_ci, is_neg = _get_simple_atom_chars(inst)
                 if chars != None:
                     prefix_set_chars = chars
                     is_prefix_set_case_insensitive = is_ci
+                    is_prefix_set_negated = is_neg
                     greedy_set_chars = chars
                     is_greedy_case_insensitive = is_ci
+                    is_greedy_negated = is_neg
                     idx += 2
-            elif itype == OP_SET:
-                # Case 2: Just a match-one prefix set [set]
-                chars, is_ci = _get_simple_atom_chars(inst)
+            elif itype == OP_SET or itype == OP_ANY_NO_NL:
+                # Case 2: Just a match-one prefix set [set], [^set], or .
+                chars, is_ci, is_neg = _get_simple_atom_chars(inst)
                 if chars != None:
                     prefix_set_chars = chars
                     is_prefix_set_case_insensitive = is_ci
+                    is_prefix_set_negated = is_neg
                     idx += 1
         else:
-            greedy_set_chars, is_greedy_case_insensitive, is_ungreedy_loop, idx = _match_loop_inst(instructions, idx)
+            greedy_set_chars, is_greedy_case_insensitive, is_greedy_negated, is_ungreedy_loop, idx = _match_loop_inst(instructions, idx)
 
     # If we have a prefix_set but no greedy_set yet, check if a loop follows (e.g. `^\d\w*`).
     if prefix_set_chars != None and greedy_set_chars == None:
-        greedy_set_chars, is_greedy_case_insensitive, is_ungreedy_loop, idx = _match_loop_inst(instructions, idx)
+        greedy_set_chars, is_greedy_case_insensitive, is_greedy_negated, is_ungreedy_loop, idx = _match_loop_inst(instructions, idx)
 
     suffix, is_suffix_case_insensitive, idx, mixed_suffix = _collect_literal_run(instructions, idx)
     if mixed_suffix:
@@ -1441,20 +1459,25 @@ def optimize_matcher(instructions):
         for i in range(len(suffix)):
             c = suffix[i]
             for x in ([c.lower(), c.upper()] if is_suffix_case_insensitive else [c]):
-                if (x.lower() if is_greedy_case_insensitive else x) in greedy_set_chars:
+                in_set = (x.lower() if is_greedy_case_insensitive else x) in greedy_set_chars
+                if in_set != is_greedy_negated:
                     is_suffix_disjoint = False
                     break
             if not is_suffix_disjoint:
                 break
 
     if temp_idx < num_insts and instructions[temp_idx][0] == OP_MATCH:
+        greedy_neg_scan = _build_negated_scan_info(greedy_set_chars, is_greedy_case_insensitive) if (greedy_set_chars != None and is_greedy_negated) else None
         return struct(
             prefix = prefix,
             case_insensitive_prefix = case_insensitive_prefix,
             prefix_set_chars = prefix_set_chars,
             is_prefix_set_case_insensitive = is_prefix_set_case_insensitive,
+            is_prefix_set_negated = is_prefix_set_negated,
             greedy_set_chars = greedy_set_chars,
             is_greedy_case_insensitive = is_greedy_case_insensitive,
+            is_greedy_negated = is_greedy_negated,
+            greedy_neg_scan = greedy_neg_scan,
             suffix = suffix,
             is_anchored_start = is_anchored_start,
             is_anchored_end = is_anchored_end,
@@ -1538,6 +1561,12 @@ def compute_first_skip(instructions):
                 first[c] = True
                 if is_ci:
                     first[c.upper()] = True
+            stack += [inst[2]]  # The loop may match zero characters.
+        elif op == OP_NEG_GREEDY_LOOP:
+            stop_dict = {c: True for c in inst[1][0].elems()}
+            for c in _CHR_LOOKUP.elems():
+                if c not in stop_dict:
+                    first[c] = True
             stack += [inst[2]]  # The loop may match zero characters.
         else:
             # OP_MATCH (empty match possible), OP_ANY, OP_ANY_NO_NL, ...

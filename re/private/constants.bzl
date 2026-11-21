@@ -76,6 +76,10 @@ OP_GREEDY_LOOP = 15
 # Format: (op, val, exit_pc, is_ci)
 OP_UNGREEDY_LOOP = 16
 
+# Optimization: Greedy loop for negated simple character/set (e.g. [^\n]*, [^"\\]*, .*)
+# Format: (op, (stop_chars, complement), exit_pc, None)
+OP_NEG_GREEDY_LOOP = 17
+
 # Flags
 I = 2  # buildifier: disable=confusing-name
 IGNORECASE = I

@@ -147,6 +147,23 @@ def _run_search_end_anchored_tests(env):
     assert_eq(env, p_set_loop.opt != None, True, "prefix_set + OP_GREEDY_LOOP should produce opt")
     assert_span(env, p_set_loop.match("1abcb"), (0, 5), "match ^\\d[a-z]*b")
 
+    # Negated-set and dot fast paths (`#[^\n]*`, `#.*`, `\S+`, `\D+`, `[^"\\]+`, `([^:]*):(.*)`).
+    p_comment = compile(r"#[^\n]*")
+    assert_eq(env, p_comment.opt != None, True, "#[^\\n]* should produce opt")
+    assert_span(env, p_comment.match("# hello\nnext"), (0, 7), "match #[^\\n]*")
+    assert_span(env, p_comment.search("x # hello\nnext"), (2, 9), "search #[^\\n]*")
+    assert_span(env, compile(r"#.*").match("# hello\nnext"), (0, 7), "match #.*")
+    assert_span(env, compile(r"[^\"\\]+").match("hello\\world"), (0, 5), "match [^\"\\\\]+")
+    assert_span(env, compile(r"[^\"\\]+").search("\"abc\\d"), (1, 4), "search [^\"\\\\]+")
+    assert_span(env, compile(r"(?i)[^a]*a").search("xyzABC"), (0, 4), "search (?i)[^a]*a")
+    assert_span(env, compile(r"[^a]*a$").search("bcca"), (0, 4), "search [^a]*a$")
+    assert_span(env, compile(r"\D+").fullmatch("abc世界"), (0, len("abc世界")), "fullmatch \\D+ with non-ASCII")
+    assert_eq(env, findall(r"\D+", "12abc34世界56"), ["abc", "世界"], "findall \\D+ with non-ASCII")
+    assert_span(env, search(r"(?m)[^\n]*$", "abc\ndef"), (0, 3), "search (?m)[^\\n]*$")
+    assert_span(env, search(r"(?m)[^a]*$", "b\na"), (0, 1), "search (?m)[^a]*$ gives back newline")
+    m_kv = search(r"([^:]*):(.*)", "key:value\nnext")
+    assert_eq(env, m_kv.groups() if m_kv else None, ("key", "value"), "search ([^:]*):(.*)")
+
 def _run_search_suffix_endpos_tests(env):
     """Checks that the suffix search fast path honors endpos."""
     prog = compile("[ab]*c")
