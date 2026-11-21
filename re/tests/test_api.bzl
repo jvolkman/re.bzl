@@ -3,7 +3,7 @@ Tests for the high-level API functions: findall, finditer, sub, split.
 """
 
 load("@rules_testing//lib:unit_test.bzl", "unit_test")
-load("//re:re.bzl", "IGNORECASE", "compile", "findall", "finditer", "fullmatch", "match", "search", "split", "sub")
+load("//re:re.bzl", "IGNORECASE", "compile", "findall", "finditer", "fullmatch", "match", "scanner", "search", "split", "sub")
 load("//re/tests:utils.bzl", "assert_eq", "assert_span")
 
 def _test_api(env):
@@ -323,3 +323,80 @@ def run_tests_api(env):
         assert_eq(env, findall(r, "aba"), ["a", "a"], "findall with m.re")
     r = search("(?:(?:(?:b*|aa)*)*)*.", "baax").re
     assert_eq(env, match(r, "baax").span(), (0, 2), "m.re keeps the visit limit")
+
+    # 21. Compiled match_end()
+    p_num = compile(r"\d+")
+    assert_eq(env, p_num.match_end("123abc"), 3, "match_end basic")
+    assert_eq(env, p_num.match_end("abc123", 3), 6, "match_end with pos")
+    assert_eq(env, p_num.match_end("abc123", 3, 5), 5, "match_end with endpos")
+    assert_eq(env, p_num.match_end("abc123", 0), None, "match_end no match")
+    assert_eq(env, compile("a|ab").match_end("ab"), 1, "match_end with alt_dispatch")
+    assert_eq(env, compile("").match_end("abc", 1), 1, "match_end empty match returns pos (not None)")
+
+    # 22. scanner(): first-char-dispatched lexer with scan() and match()
+    sc = scanner([
+        (None, r"[ \t]+"),
+        ("NL", r"\r?\n"),
+        ("COMMENT", r"#[^\n]*"),
+        ("LBRACK", r"\["),
+        ("RBRACK", r"\]"),
+        ("EQ", r"="),
+        ("KW", r"(?i)true|false"),
+        ("KEY", r"[A-Za-z_][A-Za-z0-9_\-]*"),
+        ("STR", r"\"(?:[^\"\\]|\\.)*\""),
+        ("NUM", r"[+-]?\d+(?:\.\d+)?"),
+    ])
+    sample = "# hi\n[sec]\nk = true\ns = \"a\\\"b\" 3.14"
+    toks, end_pos = sc.scan(sample)
+    assert_eq(env, end_pos, len(sample), "scanner.scan consumes entire sample")
+    assert_eq(
+        env,
+        [(tag, sample[s:e]) for tag, s, e in toks],
+        [
+            ("COMMENT", "# hi"),
+            ("NL", "\n"),
+            ("LBRACK", "["),
+            ("KEY", "sec"),
+            ("RBRACK", "]"),
+            ("NL", "\n"),
+            ("KEY", "k"),
+            ("EQ", "="),
+            ("KW", "true"),
+            ("NL", "\n"),
+            ("KEY", "s"),
+            ("EQ", "="),
+            ("STR", "\"a\\\"b\""),
+            ("NUM", "3.14"),
+        ],
+        "scanner.scan tokenizes sample accurately and skips None tags",
+    )
+
+    # scanner.scan stops at first unmatched char and reports remainder pos.
+    toks2, rem = sc.scan("a = @bad")
+    assert_eq(env, [(tag, "a = @bad"[s:e]) for tag, s, e in toks2], [("KEY", "a"), ("EQ", "=")], "scanner.scan stops before unmatched char")
+    assert_eq(env, rem, 4, "scanner.scan returns remainder position")
+
+    # scanner.scan respects pos/endpos and stops on empty matches.
+    toks3, rem3 = sc.scan("xx key = 1 yy", pos = 3, endpos = 10)
+    assert_eq(env, [(tag, "xx key = 1 yy"[s:e]) for tag, s, e in toks3], [("KEY", "key"), ("EQ", "="), ("NUM", "1")], "scanner.scan honors pos/endpos")
+    assert_eq(env, rem3, 10, "scanner.scan ends at endpos")
+    empty_toks, empty_rem = scanner([("E", "a*")]).scan("bbb")
+    assert_eq(env, (empty_toks, empty_rem), ([], 0), "scanner.scan stops on zero-width match")
+
+    # scanner.match() matches a single token at pos (including None tags and CI flags).
+    assert_eq(env, sc.match(sample, 0), ("COMMENT", 4), "scanner.match COMMENT")
+    assert_eq(env, sc.match("  abc", 0), (None, 2), "scanner.match returns None tag on match")
+    assert_eq(env, sc.match("  abc", 2), ("KEY", 5), "scanner.match KEY at pos")
+    assert_eq(env, sc.match("@", 0), None, "scanner.match returns None on miss")
+    sc_ci = scanner([("W", "foo"), ("OTHER", r"\S+")], flags = IGNORECASE)
+    assert_eq(env, sc_ci.match("FOO", 0), ("W", 3), "scanner flags apply to string patterns")
+    assert_eq(env, sc_ci.match("世界", 0), ("OTHER", len("世界")), "scanner handles non-ASCII rules")
+
+    # Dot (no DOTALL), negated single-char class, and empty-match rule at EOF.
+    sc_dot = scanner([("ANY", ".")])
+    assert_eq(env, sc_dot.match("x", 0), ("ANY", 1), "scanner dot matches non-newline")
+    assert_eq(env, sc_dot.match("\n", 0), None, "scanner dot does not match newline")
+    sc_neg = scanner([("NOT_A", "[^a]")])
+    assert_eq(env, sc_neg.match("a", 0), None, "scanner negated class rejects excluded char")
+    assert_eq(env, sc_neg.match("b", 0), ("NOT_A", 1), "scanner negated class accepts other char")
+    assert_eq(env, scanner([("EOF", "$")]).match("abc", 3), ("EOF", 3), "scanner.match handles zero-width rule at endpos")

@@ -1,6 +1,6 @@
 """Benchmarks for the Starlark regex engine."""
 
-load("//re:re.bzl", "compile", "findall", "finditer", "match", "search", "split", "sub")
+load("//re:re.bzl", "compile", "findall", "finditer", "match", "scanner", "search", "split", "sub")
 
 def benchmark_simple_match(n):
     p = compile("abc")
@@ -161,6 +161,12 @@ def benchmark_tokenize_keywords(n):
     for _ in range(n):
         _tokenize(patterns, _TOML_DOC)
 
+def benchmark_scanner(n):
+    # Same TOML token grammar as benchmark_tokenize, using re.scanner().
+    sc = scanner([("T%d" % i, s) for i, s in enumerate(_TOKEN_PATTERNS)])
+    for _ in range(n):
+        sc.scan(_TOML_DOC)
+
 # buildifier: disable=print
 def run_benchmarks(n = 0):
     """Runs all benchmarks.
@@ -207,3 +213,5 @@ def run_benchmarks(n = 0):
     benchmark_tokenize(n // 1000)
     print("Running tokenize_keywords...")
     benchmark_tokenize_keywords(n // 1000)
+    print("Running scanner...")
+    benchmark_scanner(n // 1000)

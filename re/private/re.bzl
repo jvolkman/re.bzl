@@ -4,19 +4,27 @@ load(
     "//re/private:compiler.bzl",
     "build_alt_dispatch",
     "compile_regex",
+    "compute_first_chars",
     "compute_first_skip",
     "compute_visit_limit",
     "optimize_matcher",
 )
 load(
+    "//re/private:constants.bzl",
+    "CHR_LOOKUP",
+)
+load(
     "//re/private:vm.bzl",
     "MatchObject",
+    "build_scanner_rule",
     "expand_template",
     "fullmatch_alt_regs",
     "fullmatch_regs",
     "match_alt_regs",
     "match_regs",
+    "match_scanner_rule",
     "parse_replacement_template",
+    "scan_scanner_rules",
     "search_regs",
 )
 
@@ -37,6 +45,7 @@ def compile(pattern, flags = 0):
       A struct containing the compiled bytecode and methods:
       - search(text, pos=0, endpos=None): Scans text for a match. Returns a MatchObject or None.
       - match(text, pos=0, endpos=None): Checks for a match at pos. Returns a MatchObject or None.
+      - match_end(text, pos=0, endpos=None): Like match(), but returns the integer end index or None without allocating a MatchObject.
       - fullmatch(text, pos=0, endpos=None): Checks for a match of the entire slice text[pos:endpos]. Returns a MatchObject or None.
       - pattern: The pattern string.
       - group_count: The number of capturing groups.
@@ -102,6 +111,24 @@ def compile(pattern, flags = 0):
             return None
         return MatchObject(text, regs, self_ref[0], pos, endpos)
 
+    def _match_end(text, pos = 0, endpos = None):
+        if first_skip != None and pos >= 0 and text[pos:pos + 1] in first_skip:
+            return None
+        n = len(text)
+        if endpos == None or endpos > n:
+            endpos = n
+        elif endpos < 0:
+            endpos = 0
+        if pos < 0 or pos > n:
+            pos = 0 if pos < 0 else n
+        if alt_dispatch != None:
+            regs = match_alt_regs(alt_dispatch, text, group_count, start_index = pos, end_index = endpos)
+        else:
+            regs = match_regs(bytecode, text, group_count, start_index = pos, end_index = endpos, has_case_insensitive = has_case_insensitive, opt = opt, first_skip = first_skip, visit_limit = visit_limit)
+        if not regs:
+            return None
+        return regs[1]
+
     def _fullmatch(text, pos = 0, endpos = None):
         # The same early reject as in _match.
         if first_skip != None and pos >= 0 and text[pos:pos + 1] in first_skip:
@@ -124,6 +151,7 @@ def compile(pattern, flags = 0):
     compiled = struct(
         search = _search,
         match = _match,
+        match_end = _match_end,
         fullmatch = _fullmatch,
         bytecode = bytecode,
         named_groups = named_groups,
@@ -413,3 +441,76 @@ def split(pattern, text, maxsplit = 0, flags = 0):
 
     res_parts += [text[last_idx:]]
     return res_parts
+
+# buildifier: disable=list-append
+def scanner(rules, flags = 0):
+    """Compiles an ordered list of (tag, pattern) rules into a fast first-char-dispatched lexer.
+
+    Rules are tried in order at each position, like a top-level alternation, but
+    dispatched in O(1) by the current character and without allocating MatchObjects.
+
+    Args:
+      rules: A list of (tag, pattern) tuples, where `tag` is any value (pass
+        `None` to match and skip tokens in `scan()`) and `pattern` is a regex
+        string or compiled regex object.
+      flags: Default regex flags applied to string patterns.
+
+    Returns:
+      A struct with:
+      - scan(text, pos=0, endpos=None): Repeatedly matches rules from `pos` to
+        `endpos`, returning `(tokens, next_pos)` where `tokens` is a list of
+        `(tag, start, end)` tuples (omitting rules whose `tag` is `None`) and
+        `next_pos` is the index where scanning stopped (equals `endpos` if all
+        input was consumed). Stops if no rule matches or a rule matches empty.
+      - match(text, pos=0, endpos=None): Matches a single rule at `pos`,
+        returning `(tag, end)` or `None`.
+    """
+    by_char = {}
+    non_ascii = []
+    empty_rules = []
+
+    for tag, pattern in rules:
+        prog = compile(pattern, flags = flags) if type(pattern) == _STRING_TYPE else pattern
+        first, matches_non_ascii, can_match_empty = compute_first_chars(prog.bytecode)
+        entry = build_scanner_rule(tag, prog, first, matches_non_ascii, can_match_empty)
+        if can_match_empty:
+            empty_rules += [(tag, prog)]
+        if matches_non_ascii or can_match_empty:
+            non_ascii += [entry]
+        if first == None or can_match_empty:
+            for c in CHR_LOOKUP.elems():
+                if c in by_char:
+                    by_char[c] += [entry]
+                else:
+                    by_char[c] = [entry]
+        else:
+            for c in first:
+                if c in by_char:
+                    by_char[c] += [entry]
+                else:
+                    by_char[c] = [entry]
+
+    def _scan(text, pos = 0, endpos = None):
+        n = len(text)
+        if endpos == None or endpos > n:
+            endpos = n
+        elif endpos < 0:
+            endpos = 0
+        if pos < 0 or pos > n:
+            pos = 0 if pos < 0 else n
+        return scan_scanner_rules(by_char, non_ascii, text, pos, endpos)
+
+    def _match(text, pos = 0, endpos = None):
+        n = len(text)
+        if endpos == None or endpos > n:
+            endpos = n
+        elif endpos < 0:
+            endpos = 0
+        if pos < 0 or pos > n:
+            pos = 0 if pos < 0 else n
+        return match_scanner_rule(by_char, non_ascii, empty_rules, text, pos, endpos)
+
+    return struct(
+        scan = _scan,
+        match = _match,
+    )

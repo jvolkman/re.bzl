@@ -34,6 +34,7 @@ bzl_library(
     visibility = ["//re:__subpackages__"],
     deps = [
         ":compiler",
+        ":constants",
         ":vm",
     ],
 )

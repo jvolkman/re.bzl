@@ -1321,3 +1321,200 @@ def MatchObject(text, regs, compiled, pos, endpos):
         lastindex = lastindex,
         lastgroup = lastgroup,
     )
+
+# Scanner rule fast-path kinds (see build_scanner_rule / scan_dispatch / match_dispatch).
+_RULE_SINGLE_CHAR = 0  # Guaranteed 1-char match after first-char dispatch.
+_RULE_LITERAL = 1  # Fixed CS literal prefix.
+_RULE_SET_LOOP = 2  # CS prefix + optional prefix_set + greedy set loop (positive or negated).
+_RULE_GENERAL = 3  # General matcher (opt/alt_dispatch/NFA).
+
+def build_scanner_rule(tag, compiled, first, matches_non_ascii, can_match_empty):
+    """Compiles a single (tag, compiled_regex) rule into a fast-dispatch scanner entry.
+
+    Args:
+      tag: User-provided token tag (None means skip in scan()).
+      compiled: Compiled regex struct from compile().
+      first: First-char dict from compute_first_chars(), or None.
+      matches_non_ascii: Whether the rule can start with a non-ASCII char.
+      can_match_empty: Whether the rule can match the empty string.
+
+    Returns:
+      A tuple describing the fastest execution strategy for this rule.
+    """
+    opt = compiled.opt
+    if (opt != None and
+        not opt.is_anchored_start and
+        not opt.is_anchored_end and
+        opt.suffix == "" and
+        not opt.is_ungreedy_loop and
+        not compiled.has_case_insensitive):
+        plen = len(opt.prefix)
+        if opt.greedy_set_chars == None:
+            if first != None and not can_match_empty:
+                if plen == 1 and opt.prefix_set_chars == None and not matches_non_ascii:
+                    return (_RULE_SINGLE_CHAR, tag, None, None, None, None)
+                if plen == 0 and opt.prefix_set_chars != None:
+                    if not opt.is_prefix_set_negated and not matches_non_ascii:
+                        return (_RULE_SINGLE_CHAR, tag, None, None, None, None)
+                    if opt.is_prefix_set_negated:
+                        all_in_table = True
+                        for c in opt.prefix_set_chars.elems():
+                            if c not in ORD_LOOKUP:
+                                all_in_table = False
+                                break
+                        if all_in_table:
+                            return (_RULE_SINGLE_CHAR, tag, None, None, None, None)
+            if plen > 1 and opt.prefix_set_chars == None:
+                return (_RULE_LITERAL, tag, opt.prefix, plen, None, None)
+        else:
+            # prefix + optional prefix_set + greedy_set (positive or negated).
+            return (
+                _RULE_SET_LOOP,
+                tag,
+                opt.prefix,
+                (opt.prefix_set_chars, opt.is_prefix_set_negated),
+                (opt.greedy_set_chars, opt.is_greedy_negated, opt.greedy_neg_scan),
+                plen,
+            )
+
+    return (_RULE_GENERAL, tag, compiled, None, None, None)
+
+def match_scanner_rule(by_char, non_ascii, empty_rules, text, pos, endpos):
+    """Matches the first winning scanner rule at pos.
+
+    Args:
+      by_char: Dict mapping ASCII/Latin-1 chars to candidate rule tuples.
+      non_ascii: List of candidate rule tuples that can match non-ASCII (>255).
+      empty_rules: List of (tag, compiled) pairs that can match the empty string.
+      text: The input text.
+      pos: Clamped start position.
+      endpos: Clamped end position.
+
+    Returns:
+      A (tag, end) tuple for the first matching rule, or None.
+    """
+    if pos >= endpos:
+        if pos > endpos or not empty_rules:
+            return None
+        for tag, compiled in empty_rules:
+            if compiled.alt_dispatch != None:
+                regs = match_alt_regs(compiled.alt_dispatch, text, compiled.group_count, start_index = pos, end_index = endpos)
+            else:
+                regs = match_regs(compiled.bytecode, text, compiled.group_count, start_index = pos, end_index = endpos, has_case_insensitive = compiled.has_case_insensitive, opt = compiled.opt, visit_limit = compiled.visit_limit)
+            if regs != None:
+                return (tag, regs[1])
+        return None
+    c = text[pos]
+    cands = by_char.get(c) if c in ORD_LOOKUP else non_ascii
+    if not cands:
+        return None
+
+    for rule in cands:
+        kind = rule[0]
+        if kind == _RULE_SINGLE_CHAR:
+            return (rule[1], pos + 1)
+        if kind == _RULE_LITERAL:
+            plen = rule[3]
+            if pos + plen <= endpos and text.startswith(rule[2], pos):
+                return (rule[1], pos + plen)
+        elif kind == _RULE_SET_LOOP:
+            plen = rule[5]
+            if plen == 0 or (pos + plen <= endpos and text.startswith(rule[2], pos)):
+                cur = pos + plen
+                pset_chars, pset_neg = rule[3]
+                if pset_chars != None:
+                    if cur < endpos and ((text[cur] in pset_chars) != pset_neg):
+                        cur += 1
+                    else:
+                        continue
+                g_chars, g_neg, g_neg_scan = rule[4]
+                if g_neg:
+                    cur += _scan_negated_fwd(text, g_neg_scan[0], g_neg_scan[1], cur, endpos)
+                else:
+                    cur += _windowed_lstrip(text, g_chars, cur, endpos)
+                return (rule[1], cur)
+        else:
+            compiled = rule[2]
+            if compiled.alt_dispatch != None:
+                regs = match_alt_regs(compiled.alt_dispatch, text, compiled.group_count, start_index = pos, end_index = endpos)
+            else:
+                regs = match_regs(compiled.bytecode, text, compiled.group_count, start_index = pos, end_index = endpos, has_case_insensitive = compiled.has_case_insensitive, opt = compiled.opt, visit_limit = compiled.visit_limit)
+            if regs != None:
+                return (rule[1], regs[1])
+    return None
+
+# buildifier: disable=list-append
+def scan_scanner_rules(by_char, non_ascii, text, pos, endpos):
+    """Repeatedly matches scanner rules across text[pos:endpos].
+
+    Args:
+      by_char: Dict mapping ASCII/Latin-1 chars to candidate rule tuples.
+      non_ascii: List of candidate rule tuples that can match non-ASCII (>255).
+      text: The input text.
+      pos: Clamped start position.
+      endpos: Clamped end position.
+
+    Returns:
+      A tuple (tokens, next_pos) where tokens is a list of (tag, start, end)
+      for each matched rule whose tag is not None, and next_pos is the index
+      where scanning stopped.
+    """
+    tokens = []
+    for _ in range(endpos - pos):
+        if pos >= endpos:
+            break
+        c = text[pos]
+        cands = by_char.get(c) if c in ORD_LOOKUP else non_ascii
+        if not cands:
+            break
+
+        matched_end = -1
+        matched_tag = None
+        for rule in cands:
+            kind = rule[0]
+            if kind == _RULE_SINGLE_CHAR:
+                matched_tag = rule[1]
+                matched_end = pos + 1
+                break
+            if kind == _RULE_LITERAL:
+                plen = rule[3]
+                if pos + plen <= endpos and text.startswith(rule[2], pos):
+                    matched_tag = rule[1]
+                    matched_end = pos + plen
+                    break
+            elif kind == _RULE_SET_LOOP:
+                plen = rule[5]
+                if plen == 0 or (pos + plen <= endpos and text.startswith(rule[2], pos)):
+                    cur = pos + plen
+                    pset_chars, pset_neg = rule[3]
+                    if pset_chars != None:
+                        if cur < endpos and ((text[cur] in pset_chars) != pset_neg):
+                            cur += 1
+                        else:
+                            continue
+                    g_chars, g_neg, g_neg_scan = rule[4]
+                    if g_neg:
+                        cur += _scan_negated_fwd(text, g_neg_scan[0], g_neg_scan[1], cur, endpos)
+                    else:
+                        cur += _windowed_lstrip(text, g_chars, cur, endpos)
+                    matched_tag = rule[1]
+                    matched_end = cur
+                    break
+            else:
+                compiled = rule[2]
+                if compiled.alt_dispatch != None:
+                    regs = match_alt_regs(compiled.alt_dispatch, text, compiled.group_count, start_index = pos, end_index = endpos)
+                else:
+                    regs = match_regs(compiled.bytecode, text, compiled.group_count, start_index = pos, end_index = endpos, has_case_insensitive = compiled.has_case_insensitive, opt = compiled.opt, visit_limit = compiled.visit_limit)
+                if regs != None:
+                    matched_tag = rule[1]
+                    matched_end = regs[1]
+                    break
+
+        if matched_end <= pos:
+            break
+        if matched_tag != None:
+            tokens += [(matched_tag, pos, matched_end)]
+        pos = matched_end
+
+    return tokens, pos
