@@ -15,6 +15,8 @@ def api_test(name):
         impl = _test_api,
     )
 
+_TOP_LEVEL_COMPILED = compile("(a)")
+
 def _bracket_group1(m):
     return "[" + m.group(1) + "]"
 
@@ -309,8 +311,12 @@ def run_tests_api(env):
     assert_eq(env, [m.group() for m in finditer("a", "aAb", flags = IGNORECASE)], ["a", "A"], "finditer with flags")
     assert_eq(env, [m.group() for m in finditer(compile("(?i)a"), "aAb")], ["a", "A"], "finditer with a compiled pattern")
 
-    # 20. A MatchObject's re can be passed back in as a pattern
-    for r in [search("(a)", "xa").re, match("(a)", "a").re, fullmatch("(a)", "a").re]:
+    # 20. A MatchObject's re preserves pattern and methods and can be reused
+    for r in [search("(a)", "xa").re, match("(a)", "a").re, fullmatch("(a)", "a").re, _TOP_LEVEL_COMPILED.search("xa").re]:
+        assert_eq(env, r.pattern, "(a)", "m.re.pattern preserved")
+        assert_eq(env, r.search("ya").span(1), (1, 2), "m.re.search method works")
+        assert_eq(env, r.match("ab").span(1), (0, 1), "m.re.match method works")
+        assert_eq(env, r.fullmatch("a").span(1), (0, 1), "m.re.fullmatch method works")
         assert_eq(env, search(r, "ya").span(1), (1, 2), "search with m.re")
         assert_eq(env, match(r, "ab").span(1), (0, 1), "match with m.re")
         assert_eq(env, fullmatch(r, "a").span(1), (0, 1), "fullmatch with m.re")
