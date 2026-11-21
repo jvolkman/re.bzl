@@ -1489,13 +1489,19 @@ def compute_first_skip(instructions):
                 first[c.upper()] = True
         elif op == OP_SET:
             set_struct, is_negated = inst[1]
-            if is_negated or not set_struct.is_simple:
+            if not set_struct.is_simple:
                 return None
             is_ci = inst[2]
-            for c in set_struct.all_chars.elems():
-                first[c] = True
-                if is_ci:
-                    first[c.upper()] = True
+            if is_negated:
+                lookup = set_struct.lookup
+                for c in _CHR_LOOKUP.elems():
+                    if (c.lower() if is_ci else c) not in lookup:
+                        first[c] = True
+            else:
+                for c in set_struct.all_chars.elems():
+                    first[c] = True
+                    if is_ci:
+                        first[c.upper()] = True
         elif op == OP_GREEDY_LOOP or op == OP_UNGREEDY_LOOP:
             is_ci = inst[3]
             for c in inst[1].elems():

@@ -751,31 +751,25 @@ def search_regs(bytecode, text, group_count, start_index = 0, end_index = None, 
     Returns:
       List of registers (start/end indices) or None.
     """
-    if input_lower == None and has_case_insensitive:
-        input_lower = text.lower()
-
     effective_len = len(text) if end_index == None else end_index
+    anchored_start = (opt and opt.is_anchored_start) or (len(bytecode) > 1 and bytecode[1][0] == OP_ANCHOR_START)
 
-    if must_advance and opt and opt.is_anchored_start:
-        # `^` (without MULTILINE) only matches at index 0. After an empty match there,
-        # only a non-empty match at index 0 remains; avoid scanning the whole input.
+    if anchored_start:
+        # `^` (without MULTILINE) only matches at index 0, never at a later
+        # start position (e.g. the next findall/sub/split iteration).
         if start_index > 0:
             return None
-        return execute(bytecode, text, (group_count + 1) * 2, end_index = end_index, anchored = True, has_case_insensitive = has_case_insensitive, input_lower = input_lower, must_advance = True, visit_limit = visit_limit)
+        if must_advance:
+            return execute(bytecode, text, (group_count + 1) * 2, end_index = end_index, anchored = True, has_case_insensitive = has_case_insensitive, input_lower = input_lower, must_advance = True, visit_limit = visit_limit)
+        return match_regs(bytecode, text, group_count, start_index = 0, end_index = end_index, has_case_insensitive = has_case_insensitive, opt = opt, input_lower = input_lower, first_skip = first_skip, visit_limit = visit_limit)
+
+    if input_lower == None and has_case_insensitive:
+        input_lower = text.lower()
 
     # Fast path optimization. The fast paths below do not implement must_advance. It
     # is only set after an empty match, which the patterns they handle can produce
     # only at the end of the input, where the general engine is cheap.
     if opt and not must_advance:
-        if opt.is_anchored_start:
-            # `^` (without MULTILINE) only matches at index 0, never at a later
-            # start position (e.g. the next findall/sub/split iteration).
-            if start_index > 0:
-                return None
-
-            # If anchored at start, search is just match
-            return match_regs(bytecode, text, group_count, start_index = start_index, end_index = end_index, has_case_insensitive = has_case_insensitive, opt = opt, input_lower = input_lower, visit_limit = visit_limit)
-
         # Only `...prefix [set]* suffix$` and `...prefix [set]+ suffix$` are handled here.
         # (`(?i:[ab])[ab]*` has equal sets but isn't `[ab]+`.)
         prefix_set_is_plus = opt.prefix_set_chars != None and opt.prefix_set_chars == opt.greedy_set_chars and opt.is_prefix_set_case_insensitive == opt.is_greedy_case_insensitive
@@ -887,6 +881,30 @@ def search_regs(bytecode, text, group_count, start_index = 0, end_index = None, 
                     break
 
             return None
+        elif opt.suffix == "" and opt.prefix_set_chars != None and not opt.is_anchored_end and first_skip != None:
+            # Unanchored `[set]`, `[set]+`, or `[set1][set2]*` with no literal prefix/suffix:
+            # jump straight to the next candidate via first_skip, then consume any greedy loop.
+            pos = start_index
+            set_text = input_lower if opt.is_prefix_set_case_insensitive else text
+            loop_text = input_lower if opt.is_greedy_case_insensitive else text
+            for _ in range(effective_len - start_index + 1):
+                if pos >= effective_len:
+                    return None
+                pos += _windowed_lstrip(text, first_skip, pos, effective_len)
+                if pos >= effective_len:
+                    return None
+                if set_text[pos] in opt.prefix_set_chars:
+                    match_end = pos + 1
+                    if opt.greedy_set_chars != None and not opt.is_ungreedy_loop:
+                        match_end += _windowed_lstrip(loop_text, opt.greedy_set_chars, match_end, effective_len)
+                    if group_count == 0:
+                        return [pos, match_end, -1]
+                    regs = [-1] * ((group_count + 1) * 2 + 1)
+                    regs[0] = pos
+                    regs[1] = match_end
+                    return regs
+                pos += 1
+            return None
 
     num_regs = (group_count + 1) * 2
     return execute(bytecode, text, num_regs, start_index = start_index, end_index = end_index, anchored = False, has_case_insensitive = has_case_insensitive, input_lower = input_lower, first_skip = first_skip, must_advance = must_advance, visit_limit = visit_limit)
@@ -916,81 +934,107 @@ def match_regs(bytecode, text, group_count, start_index = 0, end_index = None, h
     if first_skip != None and (start_index >= effective_len or text[start_index] in first_skip):
         return None
 
-    if input_lower == None and has_case_insensitive and opt != None and (opt.case_insensitive_prefix or opt.is_prefix_set_case_insensitive or opt.is_greedy_case_insensitive or opt.is_suffix_case_insensitive):
-        input_lower = text.lower()
-
     # Fast path optimization (the fast path does not evaluate `^`, so it only
     # applies at index 0 for start-anchored patterns).
     if opt and (start_index == 0 or not opt.is_anchored_start):
-        # Simple anchored prefix match
-        check_text = input_lower if opt.case_insensitive_prefix else text
+        # Simple anchored prefix match (lower only the prefix slice if needed,
+        # avoiding O(len(text)) lowering on match() calls over large inputs).
+        prefix_len = len(opt.prefix)
+        prefix_ok = start_index + prefix_len <= effective_len
+        if prefix_ok and prefix_len > 0:
+            if opt.case_insensitive_prefix:
+                if input_lower != None:
+                    prefix_ok = input_lower.startswith(opt.prefix, start_index)
+                else:
+                    prefix_ok = text[start_index:start_index + prefix_len].lower() == opt.prefix
+            else:
+                prefix_ok = text.startswith(opt.prefix, start_index)
 
-        if check_text.startswith(opt.prefix, start_index) and start_index + len(opt.prefix) <= effective_len:
-            match_end = start_index + len(opt.prefix)
+        if prefix_ok:
+            match_end = start_index + prefix_len
             fast_path_ok = True
 
             # 1. Match prefix_set_chars (exactly once)
             if opt.prefix_set_chars != None:
-                set_text = input_lower if opt.is_prefix_set_case_insensitive else text
-                if match_end < effective_len and set_text[match_end] in opt.prefix_set_chars:
-                    match_end += 1
+                if match_end < effective_len:
+                    c = text[match_end]
+                    if opt.is_prefix_set_case_insensitive:
+                        c = input_lower[match_end] if input_lower != None else c.lower()
+                    if c in opt.prefix_set_chars:
+                        match_end += 1
+                    else:
+                        fast_path_ok = False
                 else:
                     fast_path_ok = False
 
             # 2. Match greedy_set_chars and suffix. Each part is compared case-insensitively
             # only if that part of the pattern is (see fullmatch_regs).
             if fast_path_ok:
-                suffix_text = input_lower if opt.is_suffix_case_insensitive else text
-                loop_text = input_lower if opt.is_greedy_case_insensitive else text
+                loop_lower = opt.is_greedy_case_insensitive and input_lower == None
+                loop_text = input_lower if (opt.is_greedy_case_insensitive and input_lower != None) else text
+                suffix_len = len(opt.suffix)
                 if opt.is_anchored_end:
                     # Must match suffix at the end and greedy_set in between
-                    if effective_len >= len(opt.suffix) and suffix_text.startswith(opt.suffix, effective_len - len(opt.suffix)):
-                        middle_start = match_end
-                        middle_end = effective_len - len(opt.suffix)
-                        if middle_end >= middle_start:
-                            if opt.greedy_set_chars != None:
-                                strip_len = _windowed_lstrip(loop_text, opt.greedy_set_chars, middle_start, middle_end)
-                                if middle_start + strip_len >= middle_end:
-                                    match_end = effective_len
-                                else:
-                                    fast_path_ok = False
-                            elif middle_start == middle_end:
+                    suffix_start = effective_len - suffix_len
+                    suffix_ok = suffix_start >= match_end
+                    if suffix_ok and suffix_len > 0:
+                        if opt.is_suffix_case_insensitive:
+                            if input_lower != None:
+                                suffix_ok = input_lower.startswith(opt.suffix, suffix_start)
+                            else:
+                                suffix_ok = text[suffix_start:effective_len].lower() == opt.suffix
+                        else:
+                            suffix_ok = text.startswith(opt.suffix, suffix_start)
+                    if suffix_ok:
+                        if opt.greedy_set_chars != None:
+                            strip_len = _windowed_lstrip(loop_text, opt.greedy_set_chars, match_end, suffix_start, lower = loop_lower)
+                            if match_end + strip_len >= suffix_start:
                                 match_end = effective_len
                             else:
                                 fast_path_ok = False
+                        elif match_end == suffix_start:
+                            match_end = effective_len
                         else:
                             fast_path_ok = False
                     else:
                         fast_path_ok = False
-                elif opt.suffix != "":
+                elif suffix_len > 0:
                     # Case: ^a*b (not anchored at end)
                     # Find first occurrence of suffix after match_end.
                     # Only valid for lazy loops, or greedy loops that cannot consume the suffix.
                     if opt.greedy_set_chars != None and not opt.is_ungreedy_loop and not opt.is_suffix_disjoint:
                         fast_path_ok = False
-                    found_idx = suffix_text.find(opt.suffix, match_end, effective_len) if fast_path_ok else -1
+                    found_idx = -1
+                    if fast_path_ok:
+                        if opt.is_suffix_case_insensitive:
+                            if input_lower == None:
+                                input_lower = text.lower()
+                            found_idx = input_lower.find(opt.suffix, match_end, effective_len)
+                        else:
+                            found_idx = text.find(opt.suffix, match_end, effective_len)
                     if found_idx != -1:
                         # Check if everything between match_end and found_idx is in greedy_set
                         if opt.greedy_set_chars != None:
-                            strip_len = _windowed_lstrip(loop_text, opt.greedy_set_chars, match_end, found_idx)
+                            strip_len = _windowed_lstrip(loop_text, opt.greedy_set_chars, match_end, found_idx, lower = loop_lower)
                             if match_end + strip_len >= found_idx:
-                                match_end = found_idx + len(opt.suffix)
+                                match_end = found_idx + suffix_len
                             else:
                                 fast_path_ok = False
-                        else:
+                        elif match_end == found_idx:
                             # No greedy set, suffix must follow prefix immediately
-                            if match_end == found_idx:
-                                match_end = found_idx + len(opt.suffix)
-                            else:
-                                fast_path_ok = False
+                            match_end = found_idx + suffix_len
+                        else:
+                            fast_path_ok = False
                     else:
                         fast_path_ok = False
                 elif opt.greedy_set_chars != None and not opt.is_ungreedy_loop:
                     # No suffix, not anchored at end: greedy match the rest.
                     # (A lazy loop matches zero iterations here.)
-                    match_end += _windowed_lstrip(loop_text, opt.greedy_set_chars, match_end, effective_len)
+                    match_end += _windowed_lstrip(loop_text, opt.greedy_set_chars, match_end, effective_len, lower = loop_lower)
 
             if fast_path_ok:
+                if group_count == 0:
+                    return [start_index, match_end, -1]
                 regs = [-1] * ((group_count + 1) * 2 + 1)
                 regs[0] = start_index
                 regs[1] = match_end
@@ -1024,53 +1068,64 @@ def fullmatch_regs(bytecode, text, group_count, start_index = 0, end_index = Non
     if first_skip != None and (start_index >= effective_len or text[start_index] in first_skip):
         return None
 
-    if input_lower == None and has_case_insensitive and opt != None and (opt.case_insensitive_prefix or opt.is_prefix_set_case_insensitive or opt.is_greedy_case_insensitive or opt.is_suffix_case_insensitive):
-        input_lower = text.lower()
-
     # Fast path optimization (the fast path does not evaluate `^`, so it only
     # applies at index 0 for start-anchored patterns).
     if opt and (start_index == 0 or not opt.is_anchored_start):
         # fullmatch() MUST match the entire string from start_index.
-        # So it behaves like it has an implicit $ anchor.
         # Each part is compared case-insensitively only if that part of the pattern is
         # (scoped flags such as `(?i:x)[a-z]+` can mix both).
-        prefix_text = input_lower if opt.case_insensitive_prefix else text
-        suffix_text = input_lower if opt.is_suffix_case_insensitive else text
-        loop_text = input_lower if opt.is_greedy_case_insensitive else text
+        prefix_len = len(opt.prefix)
+        suffix_len = len(opt.suffix)
+        suffix_start = effective_len - suffix_len
+        match_end = start_index + prefix_len
+        fast_path_ok = match_end <= suffix_start
 
-        if effective_len >= len(opt.suffix) and prefix_text.startswith(opt.prefix, start_index) and suffix_text.startswith(opt.suffix, effective_len - len(opt.suffix)):
-            match_end = start_index + len(opt.prefix)
-            fast_path_ok = match_end <= effective_len - len(opt.suffix)
+        if fast_path_ok and prefix_len > 0:
+            if opt.case_insensitive_prefix:
+                if input_lower != None:
+                    fast_path_ok = input_lower.startswith(opt.prefix, start_index)
+                else:
+                    fast_path_ok = text[start_index:match_end].lower() == opt.prefix
+            else:
+                fast_path_ok = text.startswith(opt.prefix, start_index)
 
-            if opt.prefix_set_chars != None:
-                set_text = input_lower if opt.is_prefix_set_case_insensitive else text
-                if match_end < effective_len and set_text[match_end] in opt.prefix_set_chars:
+        if fast_path_ok and suffix_len > 0:
+            if opt.is_suffix_case_insensitive:
+                if input_lower != None:
+                    fast_path_ok = input_lower.startswith(opt.suffix, suffix_start)
+                else:
+                    fast_path_ok = text[suffix_start:effective_len].lower() == opt.suffix
+            else:
+                fast_path_ok = text.startswith(opt.suffix, suffix_start)
+
+        if fast_path_ok and opt.prefix_set_chars != None:
+            if match_end < suffix_start:
+                c = text[match_end]
+                if opt.is_prefix_set_case_insensitive:
+                    c = input_lower[match_end] if input_lower != None else c.lower()
+                if c in opt.prefix_set_chars:
                     match_end += 1
                 else:
                     fast_path_ok = False
+            else:
+                fast_path_ok = False
 
-            if fast_path_ok:
-                middle_start = match_end
-                middle_end = effective_len - len(opt.suffix)
-                if middle_end >= middle_start:
-                    if opt.greedy_set_chars != None:
-                        strip_len = _windowed_lstrip(loop_text, opt.greedy_set_chars, middle_start, middle_end)
-                        if middle_start + strip_len >= middle_end:
-                            match_end = effective_len
-                        else:
-                            fast_path_ok = False
-                    elif middle_start == middle_end:
-                        match_end = effective_len
-                    else:
-                        fast_path_ok = False
-                else:
-                    fast_path_ok = False
+        if fast_path_ok:
+            if opt.greedy_set_chars != None:
+                loop_lower = opt.is_greedy_case_insensitive and input_lower == None
+                loop_text = input_lower if (opt.is_greedy_case_insensitive and input_lower != None) else text
+                strip_len = _windowed_lstrip(loop_text, opt.greedy_set_chars, match_end, suffix_start, lower = loop_lower)
+                fast_path_ok = match_end + strip_len >= suffix_start
+            else:
+                fast_path_ok = match_end == suffix_start
 
-            if fast_path_ok and match_end == effective_len:
-                regs = [-1] * ((group_count + 1) * 2 + 1)
-                regs[0] = start_index
-                regs[1] = match_end
-                return regs
+        if fast_path_ok:
+            if group_count == 0:
+                return [start_index, effective_len, -1]
+            regs = [-1] * ((group_count + 1) * 2 + 1)
+            regs[0] = start_index
+            regs[1] = effective_len
+            return regs
 
     num_regs = (group_count + 1) * 2
     return execute(bytecode, text, num_regs, start_index = start_index, end_index = end_index, anchored = True, has_case_insensitive = has_case_insensitive, input_lower = input_lower, require_end = True, visit_limit = visit_limit)

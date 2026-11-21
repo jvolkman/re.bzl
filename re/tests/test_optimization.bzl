@@ -179,6 +179,16 @@ def _run_first_skip_tests(env):
     assert_span(env, search("[xy]", "aaa"), None, "search [xy] without candidates")
     assert_span(env, compile("[bc]").search("aab", 0, 2), None, "search [bc] with endpos before the candidate")
     assert_eq(env, findall("[0-9]+", "a1b22c333"), ["1", "22", "333"], "findall [0-9]+")
+    assert_eq(env, findall(r"\d+", "世界123abc45"), ["123", "45"], "findall \\d+ over non-ASCII text")
+
+    # Negated simple sets compute first_skip from their excluded ASCII characters.
+    nonspace_skip = compile(r"\S+").first_skip
+    assert_eq(env, " " in nonspace_skip and "\n" in nonspace_skip, True, "\\S+ first_skip includes whitespace")
+    assert_eq(env, "a" in nonspace_skip, False, "\\S+ first_skip excludes non-whitespace")
+    assert_eq(env, findall(r"\S+", "  foo\t世界\nbar "), ["foo", "世界", "bar"], "findall \\S+ with non-ASCII")
+    ci_neg_skip = compile("(?i)[^a]").first_skip
+    assert_eq(env, "a" in ci_neg_skip and "A" in ci_neg_skip, True, "(?i)[^a] first_skip includes a/A")
+    assert_eq(env, "b" in ci_neg_skip, False, "(?i)[^a] first_skip excludes b")
 
     # match()/fullmatch() reject in O(1) when the first char cannot begin a match.
     prog = compile("[ab]c")
