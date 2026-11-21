@@ -135,6 +135,13 @@ def _run_search_end_anchored_tests(env):
     assert_span(env, search(r"1*?2$", "12 12"), (3, 5), "search 1*?2$")
     assert_eq(env, findall(r"(?i)\s*a$", "a A"), [" A"], "findall (?i)\\s*a$")
 
+    # Short endpos (< len(suffix)) and prefix search with endpos / misses.
+    assert_span(env, compile("a*a$").search("a", 0, 0), None, "search a*a$ with endpos < len(suffix)")
+    assert_span(env, compile("a*a$").match("a", 0, 0), None, "match a*a$ with endpos < len(suffix)")
+    assert_span(env, compile(r"needle\d+").search("needle123", 0, 5), None, "prefix search respects endpos")
+    assert_span(env, compile("needle").search("haystack"), None, "prefix search miss returns None")
+    assert_span(env, compile("a[ab]*c$").search("aaabc", 1), (1, 5), "end-anchored search with overlapping prefix and pos")
+
 def _run_search_suffix_endpos_tests(env):
     """Checks that the suffix search fast path honors endpos."""
     prog = compile("[ab]*c")
