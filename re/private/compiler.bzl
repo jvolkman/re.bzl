@@ -285,7 +285,7 @@ def _parse_escape(pattern, i, pattern_len):
                 if int(oct_str + pattern[i + 2], 8) <= 255:
                     oct_str += pattern[i + 2]
                     consumed = 2
-        return _CHR_LOOKUP[int(oct_str, 8)], i + 1 + consumed
+        return _CHR_LOOKUP[int(oct_str, 8)], i + consumed
 
     # Look up simple escapes (\n, \r, etc.)
     if char in _SIMPLE_ESCAPES:
@@ -322,6 +322,7 @@ def _parse_set_atom(pattern, i, pattern_len):
             return struct(char = char, atoms = None, negated_atoms = None), new_i + 1
     elif current == "[" and i + 1 < pattern_len and pattern[i + 1] == ":":
         # POSIX class [[:name:]]
+        orig_i = i
         i += 2
         is_negated = False
         if i < pattern_len and pattern[i] == "^":
@@ -345,10 +346,10 @@ def _parse_set_atom(pattern, i, pattern_len):
                     return struct(char = None, atoms = pset, negated_atoms = None), end_name + 2
             else:
                 # Not a valid POSIX class, treat as literal [
-                return struct(char = "[", atoms = None, negated_atoms = None), i
+                return struct(char = "[", atoms = None, negated_atoms = None), orig_i + 1
         else:
             # No closing :], treat as literal [
-            return struct(char = "[", atoms = None, negated_atoms = None), i
+            return struct(char = "[", atoms = None, negated_atoms = None), orig_i + 1
     else:
         return struct(char = current, atoms = None, negated_atoms = None), i + 1
 
@@ -1196,7 +1197,7 @@ def compile_regex(pattern, flags = 0, start_group_id = 0):
                 instructions += [(OP_SET, (set_struct, is_negated), True, None)]
             else:
                 instructions += [(OP_SET, (set_struct, is_negated), False, None)]
-            i = _handle_quantifier(pattern, i, instructions)
+            i = _handle_quantifier(pattern, i, instructions, ungreedy = ungreedy)
 
         elif char == "(":
             saved_flags = (case_insensitive, multiline, dot_all, ungreedy, verbose)

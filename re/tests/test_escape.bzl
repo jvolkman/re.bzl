@@ -30,6 +30,9 @@ def run_tests_escape(env):
 
     # RE2 Compatibility: Octal Escapes
     assert_match(env, "\\141", "a", "a")
+    assert_match(env, "\\141b", "ab", "ab")
+    assert_match(env, "\\0b", "\0b", "\0b")
+    assert_match(env, "[\\141b]+", "ab", "ab")
     assert_match(env, "\\000", "\0", "\0")
 
     # RE2 Compatibility: Additional Escapes
@@ -78,6 +81,8 @@ def run_tests_escape(env):
     assert_match(env, "[a-c-e]", "-", "-")
     assert_match(env, "[[:digit:]a-fA-F]", "e", "e")  # Mixed POSIX and literal
     assert_match(env, "[a-f[:digit:]A-F]", "5", "5")
+    assert_match(env, "[[:notaclass:]]", ":]", ":]")  # Invalid POSIX class keeps ':'
+    assert_match(env, "[[:a]", ":", ":")  # Unclosed POSIX class keeps ':'
     assert_match(env, "[^-a-c]", "d", "d")  # Negated start hyphen
     assert_match(env, "[^-a-c]", "-", None)
 
