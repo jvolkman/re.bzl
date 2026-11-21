@@ -142,6 +142,11 @@ def _run_search_end_anchored_tests(env):
     assert_span(env, compile("needle").search("haystack"), None, "prefix search miss returns None")
     assert_span(env, compile("a[ab]*c$").search("aaabc", 1), (1, 5), "end-anchored search with overlapping prefix and pos")
 
+    # prefix_set followed by an OP_GREEDY_LOOP still builds opt.
+    p_set_loop = compile(r"^\d[a-z]*b")
+    assert_eq(env, p_set_loop.opt != None, True, "prefix_set + OP_GREEDY_LOOP should produce opt")
+    assert_span(env, p_set_loop.match("1abcb"), (0, 5), "match ^\\d[a-z]*b")
+
 def _run_search_suffix_endpos_tests(env):
     """Checks that the suffix search fast path honors endpos."""
     prog = compile("[ab]*c")
