@@ -160,105 +160,6 @@ def _char_in_set(set_struct, c):
     return False
 
 # buildifier: disable=list-append
-def _process_batch(instructions, batch, input_str, current_idx, input_len, input_lower, require_end = False, lower_on_demand = False, forbid_empty_at = -1):
-    """Processes a batch of threads against the current character.
-
-    batch is a list of (pc, regs, skip_idx) in priority order (index 0 is highest).
-    Returns (next_threads_list, best_match_regs).
-    """
-    next_threads_list = []
-    next_threads_dict = {}
-    best_match_regs = None
-
-    char = input_str[current_idx] if current_idx < input_len else None
-    char_lower = None
-    if char != None:
-        if input_lower != None:
-            char_lower = input_lower[current_idx]
-        elif lower_on_demand:
-            char_lower = char.lower()
-
-    # Process in priority order (0 = highest)
-    next_idx = current_idx + 1
-    for pc, regs, skip_idx in batch:
-        if skip_idx > current_idx:
-            # Still skipping due to a previous OP_STRING or OP_GREEDY_LOOP match.
-            # Pass it along while maintaining priority. Single-character steps resume
-            # at next_idx and are keyed by pc alone; others by (pc, index).
-            key = pc if skip_idx == next_idx else (pc, skip_idx)
-            if key not in next_threads_dict:
-                next_threads_dict[key] = True
-                next_threads_list += [(pc, regs, skip_idx)]
-            continue
-
-        inst = instructions[pc]
-        itype = inst[0]
-
-        if itype == OP_MATCH:
-            if require_end and current_idx != input_len:
-                # fullmatch(): a match that ends early is a dead thread, not a result.
-                continue
-            if current_idx == forbid_empty_at:
-                # execute(must_advance = True) passes its start_index. Only threads
-                # seeded there exist yet, so this match is empty. It is a dead thread,
-                # not a result: lower-priority threads may still match non-empty.
-                continue
-            best_match_regs = regs
-
-            # PRUNING: Once a match is found, no lower-priority thread can EVER win
-            # for the current or any FUTURE character position (leftmost-priority).
-            break
-
-        if char == None:
-            continue
-
-        match_found = False
-        if itype == OP_CHAR:
-            check_char = char_lower if inst[2] else char
-            match_found = (inst[1] == check_char)
-        elif itype == OP_SET:
-            set_struct = inst[1]
-            c_check = char_lower if inst[2] else char
-            if set_struct.is_simple:
-                match_found = ((c_check in set_struct.lookup) != inst[3])
-            else:
-                match_found = (_char_in_set(set_struct, c_check) != inst[3])
-        elif itype == OP_STRING:
-            s = inst[1]
-            if inst[2]:
-                if input_lower != None:
-                    match_found = input_lower.startswith(s, current_idx)
-                elif lower_on_demand:
-                    match_found = input_str[current_idx:current_idx + len(s)].lower() == s
-            else:
-                match_found = input_str.startswith(s, current_idx)
-            if match_found:
-                resume_idx = current_idx + len(s)
-                if resume_idx <= input_len:  # The string must end by endpos.
-                    # An OP_STRING has at least two characters, so it never resumes at
-                    # next_idx: its threads are keyed by (pc, index).
-                    key = (pc + 1, resume_idx)
-                    if key not in next_threads_dict:
-                        next_threads_dict[key] = True
-                        next_threads_list += [(pc + 1, regs, resume_idx)]
-            continue
-        elif itype == OP_ANY:
-            match_found = True
-        elif itype == OP_ANY_NO_NL:
-            match_found = (char != "\n")
-        elif itype == OP_UNGREEDY_LOOP:
-            # Already verified to match at current_idx during epsilon expansion.
-            match_found = True
-
-        if match_found:
-            next_pc = pc if itype == OP_UNGREEDY_LOOP else pc + 1
-            if next_pc not in next_threads_dict:
-                next_threads_dict[next_pc] = True
-                next_threads_list += [(next_pc, regs, next_idx)]
-
-    return next_threads_list, best_match_regs
-
-# buildifier: disable=list-append
 def execute(instructions, input_str, num_regs, start_index = 0, end_index = None, initial_regs = None, anchored = False, has_case_insensitive = False, input_lower = None, require_end = False, first_skip = None, must_advance = False, visit_limit = 2):
     """Executes the bytecode on the input string.
 
@@ -347,32 +248,45 @@ def execute(instructions, input_str, num_regs, start_index = 0, end_index = None
             if first_skip == None or (char_idx < input_len and input_str[char_idx] not in first_skip):
                 current_threads += [(0, initial_regs, char_idx)]
 
-        # Expand epsilon closure for current threads (inlined to avoid per-thread call overhead).
+        if not current_threads:
+            if anchored or best_match_regs != None:
+                break
+            continue
+
+        # Expand epsilon transitions and match against the current character in a single pass.
         visited_gen += visit_limit + 1
         visited_last = visited_gen + visit_limit - 1
-        expanded_batch = []
+        next_threads = []
+        next_threads_dict = {}
+        batch_match = None
+
+        char = input_str[char_idx] if char_idx < input_len else None
+        char_lower = None
+        if char != None:
+            if input_lower != None:
+                char_lower = input_lower[char_idx]
+            elif lower_on_demand:
+                char_lower = char.lower()
+        next_idx = char_idx + 1
 
         for s_pc, s_regs, s_skip in current_threads:
+            if batch_match != None:
+                # PRUNING: Once a match is found, no lower-priority thread can win.
+                break
+
             if s_skip > char_idx:
-                # Still skipping. Maintain priority.
-                expanded_batch += [(s_pc, s_regs, s_skip)]
+                # Still skipping due to a previous OP_STRING or OP_GREEDY_LOOP match.
+                key = s_pc if s_skip == next_idx else (s_pc, s_skip)
+                if key not in next_threads_dict:
+                    next_threads_dict[key] = True
+                    next_threads += [(s_pc, s_regs, s_skip)]
                 continue
 
-            if instructions[s_pc][0] < OP_EPSILON_START:
-                if visited[s_pc] < visited_gen:
-                    visited[s_pc] = visited_gen
-                    expanded_batch += [(s_pc, s_regs, char_idx)]
-                elif visited[s_pc] < visited_last:
-                    visited[s_pc] += 1
-                    expanded_batch += [(s_pc, s_regs, char_idx)]
-                continue
-
-            stack = [(s_pc, s_regs)]
+            # Lazily allocate stack only when an OP_SPLIT / OP_UNGREEDY_LOOP forks.
+            stack = None
+            pc = s_pc
+            regs = s_regs
             for _ in step_range:
-                if not stack:
-                    break
-                pc, regs = stack.pop()
-
                 for _ in step_range:
                     if visited[pc] < visited_gen:
                         visited[pc] = visited_gen
@@ -385,7 +299,55 @@ def execute(instructions, input_str, num_regs, start_index = 0, end_index = None
                     itype = inst[0]
 
                     if itype < OP_EPSILON_START:
-                        expanded_batch += [(pc, regs, char_idx)]
+                        if itype == OP_MATCH:
+                            if require_end and char_idx != input_len:
+                                break
+                            if char_idx == forbid_empty_at:
+                                break
+                            batch_match = regs
+                            break
+
+                        if char == None:
+                            break
+
+                        match_found = False
+                        if itype == OP_CHAR:
+                            check_char = char_lower if inst[2] else char
+                            match_found = (inst[1] == check_char)
+                        elif itype == OP_SET:
+                            set_struct = inst[1]
+                            c_check = char_lower if inst[2] else char
+                            if set_struct.is_simple:
+                                match_found = ((c_check in set_struct.lookup) != inst[3])
+                            else:
+                                match_found = (_char_in_set(set_struct, c_check) != inst[3])
+                        elif itype == OP_STRING:
+                            s = inst[1]
+                            if inst[2]:
+                                if input_lower != None:
+                                    match_found = input_lower.startswith(s, char_idx)
+                                elif lower_on_demand:
+                                    match_found = input_str[char_idx:char_idx + len(s)].lower() == s
+                            else:
+                                match_found = input_str.startswith(s, char_idx)
+                            if match_found:
+                                resume_idx = char_idx + len(s)
+                                if resume_idx <= input_len:
+                                    key = (pc + 1, resume_idx)
+                                    if key not in next_threads_dict:
+                                        next_threads_dict[key] = True
+                                        next_threads += [(pc + 1, regs, resume_idx)]
+                            break
+                        elif itype == OP_ANY:
+                            match_found = True
+                        elif itype == OP_ANY_NO_NL:
+                            match_found = (char != "\n")
+
+                        if match_found:
+                            next_pc = pc + 1
+                            if next_pc not in next_threads_dict:
+                                next_threads_dict[next_pc] = True
+                                next_threads += [(next_pc, regs, next_idx)]
                         break
 
                     if itype == OP_SPLIT:
@@ -396,7 +358,10 @@ def execute(instructions, input_str, num_regs, start_index = 0, end_index = None
                             # starting another iteration after an empty one.
                             pc = pc2 if pc1 < pc2 else pc1
                         else:
-                            stack += [(pc2, regs)]
+                            if stack == None:
+                                stack = [(pc2, regs)]
+                            else:
+                                stack += [(pc2, regs)]
                             pc = pc1
                     elif itype == OP_SAVE:
                         group_idx = inst[2]
@@ -450,42 +415,33 @@ def execute(instructions, input_str, num_regs, start_index = 0, end_index = None
                         if match_len == 0:
                             pc = inst[2]
                         else:
-                            expanded_batch += [(inst[2], regs, char_idx + match_len)]
+                            exit_pc = inst[2]
+                            resume_idx = char_idx + match_len
+                            key = exit_pc if resume_idx == next_idx else (exit_pc, resume_idx)
+                            if key not in next_threads_dict:
+                                next_threads_dict[key] = True
+                                next_threads += [(exit_pc, regs, resume_idx)]
                             break
                     elif itype == OP_UNGREEDY_LOOP:
                         if visited[pc] == visited_gen:
                             # First visit: epsilon exit (higher priority).
-                            stack += [(pc, regs)]
+                            if stack == None:
+                                stack = [(pc, regs)]
+                            else:
+                                stack += [(pc, regs)]
                             pc = inst[2]
                         else:
                             # Second visit: consume one character if it matches (lower priority).
-                            if char_idx < input_len:
-                                if inst[3]:
-                                    c_loop = input_lower[char_idx] if input_lower != None else input_str[char_idx].lower()
-                                else:
-                                    c_loop = input_str[char_idx]
-                                if c_loop in inst[1]:
-                                    expanded_batch += [(pc, regs, char_idx)]
+                            if char != None:
+                                c_loop = char_lower if inst[3] else char
+                                if c_loop in inst[1] and pc not in next_threads_dict:
+                                    next_threads_dict[pc] = True
+                                    next_threads += [(pc, regs, next_idx)]
                             break
 
-        if not expanded_batch and anchored:
-            break
-
-        next_threads = []
-        batch_match = None
-
-        if expanded_batch:
-            next_threads, batch_match = _process_batch(
-                instructions,
-                expanded_batch,
-                input_str,
-                char_idx,
-                input_len,
-                input_lower,
-                require_end,
-                lower_on_demand,
-                forbid_empty_at,
-            )
+                if batch_match != None or not stack:
+                    break
+                pc, regs = stack.pop()
 
         if batch_match:
             new_start = batch_match[0]
