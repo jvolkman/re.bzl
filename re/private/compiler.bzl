@@ -109,7 +109,8 @@ def _new_set_builder(case_insensitive = False):
         if not is_simple:
             ascii_list = [False] * 256
             for c in lookup:
-                ascii_list[_ORD_LOOKUP[c]] = True
+                if c in _ORD_LOOKUP:
+                    ascii_list[_ORD_LOOKUP[c]] = True
             for pset in negated_posix:
                 for k in range(256):
                     in_pset = False
@@ -257,9 +258,7 @@ def _parse_set_atom(pattern, i, pattern_len):
             if not pneg:
                 return struct(char = None, atoms = pset, negated_atoms = None), i + 1
             else:
-                # Predefined negated classes (\D, \W, \S) are not supported inside [] blocks
-                # consistent with previous implementation.
-                return struct(char = None, atoms = [], negated_atoms = None), i + 1
+                return struct(char = None, atoms = None, negated_atoms = pset), i + 1
         else:
             # Handle escapes inside []
             char, new_i = _parse_escape(pattern, i, pattern_len)

@@ -86,6 +86,15 @@ def run_tests_escape(env):
     assert_match(env, "[^-a-c]", "d", "d")  # Negated start hyphen
     assert_match(env, "[^-a-c]", "-", None)
 
+    # Negated predefined classes inside bracket expressions (\D, \W, \S).
+    assert_match(env, r"[\D]+", "ab1", "ab")
+    assert_match(env, r"[\S]+", "  hi ", "hi")
+    assert_match(env, r"[\W]+", "a!@#b", "!@#")
+    assert_match(env, r"[\s\S]+", "a\nb", "a\nb")
+    assert_match(env, r"[^\s\S]", "a", None)
+    assert_match(env, r"[^\d\D]", "1a", None)
+    assert_match(env, r"[\S世]+", " 世界 ", "世界")
+
     # RE2 Compatibility: Quoted Literals
     assert_match(env, "\\Q.*+\\E", ".*+", ".*+")
     assert_match(env, "\\Q.*+\\E", "abc", None)
