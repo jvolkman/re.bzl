@@ -74,7 +74,6 @@ def _new_set_builder(case_insensitive = False):
     state = {
         "lookup": {},
         "negated_posix_list": [],
-        "ascii_list": [False] * 256,
     }
 
     def add_char(c):
@@ -83,7 +82,6 @@ def _new_set_builder(case_insensitive = False):
         if case_insensitive:
             c = c.lower()
         state["lookup"][c] = True
-        state["ascii_list"][_ORD_LOOKUP[c]] = True
 
     def add_range(start, end):
         start_code = _ORD_LOOKUP[start]
@@ -93,33 +91,41 @@ def _new_set_builder(case_insensitive = False):
             if case_insensitive:
                 c = c.lower()
             state["lookup"][c] = True
-            state["ascii_list"][_ORD_LOOKUP[c]] = True
 
     def add_negated_posix(pset):
         # pset is a list of (start, end) ranges.
         state["negated_posix_list"] += [pset]
 
-        for k in range(256):
-            in_pset = False
-            for s, e in pset:
-                if k >= _ORD_LOOKUP[s] and k <= _ORD_LOOKUP[e]:
-                    in_pset = True
-                    break
-            if not in_pset:
-                state["ascii_list"][k] = True
-
     def build():
         # The VM passes all_chars to lstrip()/rstrip(), which sort their argument on
         # every call; that is cheapest when it is already sorted.
-        all_chars_str = "".join(sorted(state["lookup"].keys()))
-        is_simple = len(state["negated_posix_list"]) == 0
+        lookup = state["lookup"]
+        all_chars_str = "".join(sorted(lookup.keys()))
+        negated_posix = state["negated_posix_list"]
+        is_simple = len(negated_posix) == 0
+
+        ascii_bitmap = None
+        if not is_simple:
+            ascii_list = [False] * 256
+            for c in lookup:
+                ascii_list[_ORD_LOOKUP[c]] = True
+            for pset in negated_posix:
+                for k in range(256):
+                    in_pset = False
+                    for s, e in pset:
+                        if k >= _ORD_LOOKUP[s] and k <= _ORD_LOOKUP[e]:
+                            in_pset = True
+                            break
+                    if not in_pset:
+                        ascii_list[k] = True
+            ascii_bitmap = tuple(ascii_list)
 
         return struct(
-            lookup = state["lookup"],
-            negated_posix = state["negated_posix_list"],
+            lookup = lookup,
+            negated_posix = negated_posix,
             all_chars = all_chars_str,
             is_simple = is_simple,
-            ascii_bitmap = tuple(state["ascii_list"]),
+            ascii_bitmap = ascii_bitmap,
         )
 
     return struct(
@@ -128,6 +134,18 @@ def _new_set_builder(case_insensitive = False):
         add_negated_posix = add_negated_posix,
         build = build,
     )
+
+def _build_predefined_sets(case_insensitive):
+    res = {}
+    for key, (ranges, is_negated) in _PREDEFINED_CLASSES.items():
+        builder = _new_set_builder(case_insensitive = case_insensitive)
+        for r_start, r_end in ranges:
+            builder.add_range(r_start, r_end)
+        res[key] = (builder.build(), is_negated)
+    return res
+
+_PREDEFINED_SETS_CS = _build_predefined_sets(False)
+_PREDEFINED_SETS_CI = _build_predefined_sets(True)
 
 def _to_hex_4(val):
     """Formats an integer (0-65535) as a 4-digit hex string."""
@@ -434,7 +452,8 @@ def _is_disjoint(body_inst, next_inst):
 
     elif b_type == OP_SET:
         # Check if set is simple
-        set_struct, is_negated = body_inst[1]  # val
+        set_struct = body_inst[1]
+        is_negated = body_inst[3]
         b_is_case_insensitive = body_inst[2]  # arg1 = is_ci
         if is_negated or not set_struct.is_simple:
             return False
@@ -455,34 +474,40 @@ def _is_disjoint(body_inst, next_inst):
 
         if b_is_case_insensitive:
             # Body is lowercased.
-            if n_is_ci:
-                # Next is lowercased. Direct check.
-                check_char = n_char
-            else:
-                # Next is CS. Must check lower(n_char).
-                check_char = n_char.lower()
-
+            check_char = n_char if n_is_ci else n_char.lower()
             if b_lookup:
                 return check_char not in b_lookup
-            else:
-                return check_char != b_chars
-
-        else:
-            # Body is CS.
-            if n_is_ci:
-                # Next is CI (lower).
-                # Conservative: Skip mixing CS body with CI next
-                return False
-            else:
-                # Legacy CS-CS
+            return check_char != b_chars
+        elif n_is_ci:
+            # Body is CS, next is CI (stored lowercased): check both cases.
+            for x in (n_char, n_char.upper()):
                 if b_lookup:
-                    return n_char not in b_lookup
-                else:
-                    return n_char != b_chars
+                    if x in b_lookup:
+                        return False
+                elif x == b_chars:
+                    return False
+            return True
+        elif b_lookup:
+            return n_char not in b_lookup
+        else:
+            return n_char != b_chars
 
     if n_type == OP_SET:
-        # Conservative: Skip if next is Set
-        return False
+        n_set = next_inst[1]
+        n_negated = next_inst[3]
+        n_is_ci = next_inst[2]
+        if n_negated or not n_set.is_simple:
+            return False
+        for c in n_set.all_chars.elems():
+            candidates = (c, c.upper()) if n_is_ci else (c,)
+            for x in candidates:
+                check_c = x.lower() if b_is_case_insensitive else x
+                if b_lookup:
+                    if check_c in b_lookup:
+                        return False
+                elif check_c == b_chars:
+                    return False
+        return True
 
     if n_type == OP_ANCHOR_END:
         return True
@@ -561,7 +586,8 @@ def _get_inst_chars(inst):
     if inst[0] == OP_CHAR:
         return inst[1], inst[2]  # val, is_ci
     elif inst[0] == OP_SET:
-        set_struct, is_negated = inst[1]
+        set_struct = inst[1]
+        is_negated = inst[3]
 
         # all_chars lists every member only for a simple set (not one with a negated
         # POSIX class such as [[:^digit:]]).
@@ -619,7 +645,14 @@ def _optimize_greedy_loops(instructions):
                     loop_inst = instructions[loop_back_pc]
                     if (loop_inst[0] == OP_JUMP and loop_inst[2] == i) or \
                        (loop_inst[0] == OP_SPLIT and (loop_inst[2] == i or loop_inst[3] == i)):
-                        exit_inst = instructions[pc2]
+                        # Skip transparent OP_SAVE instructions to inspect the real
+                        # following instruction (e.g. `OP_SAVE 1` before `OP_MATCH`).
+                        exit_check_pc = pc2
+                        for _ in range(num_insts - pc2):
+                            if instructions[exit_check_pc][0] != OP_SAVE:
+                                break
+                            exit_check_pc += 1
+                        exit_inst = instructions[exit_check_pc] if exit_check_pc < num_insts else instructions[pc2]
                         if _is_disjoint(body_inst, exit_inst):
                             chars, is_ci = _get_inst_chars(body_inst)
                             if chars != None:
@@ -1078,9 +1111,9 @@ def compile_regex(pattern, flags = 0):
 
             if case_insensitive:
                 has_case_insensitive = True
-                instructions += [(OP_SET, (set_struct, is_negated), True, None)]
+                instructions += [(OP_SET, set_struct, True, is_negated)]
             else:
-                instructions += [(OP_SET, (set_struct, is_negated), False, None)]
+                instructions += [(OP_SET, set_struct, False, is_negated)]
             i = _handle_quantifier(pattern, i, instructions, ungreedy = ungreedy)
 
         elif char == "(":
@@ -1184,19 +1217,14 @@ def compile_regex(pattern, flags = 0):
                 next_c = pattern[i]
 
                 # Check for shortcuts \d, \w, \s, \b, \B
-                predef = _PREDEFINED_CLASSES.get(next_c)
+                predef = (_PREDEFINED_SETS_CI if case_insensitive else _PREDEFINED_SETS_CS).get(next_c)
                 if predef:
-                    # predef is (list, is_negated)
-                    chars, is_negated = predef
-                    builder = _new_set_builder(case_insensitive = case_insensitive)
-                    for r_start, r_end in chars:
-                        builder.add_range(r_start, r_end)
-                    set_struct = builder.build()
+                    set_struct, is_negated = predef
                     if case_insensitive:
                         has_case_insensitive = True
-                        instructions += [(OP_SET, (set_struct, is_negated), True, None)]
+                        instructions += [(OP_SET, set_struct, True, is_negated)]
                     else:
-                        instructions += [(OP_SET, (set_struct, is_negated), False, None)]
+                        instructions += [(OP_SET, set_struct, False, is_negated)]
                 elif next_c == "b":
                     instructions += [(OP_WORD_BOUNDARY, None, None, None)]
                 elif next_c == "B":
@@ -1255,7 +1283,8 @@ def _get_simple_atom_chars(inst):
     if itype == OP_CHAR:
         return inst[1], inst[2]
     if itype == OP_SET:
-        set_data, is_negated = inst[1]
+        set_data = inst[1]
+        is_negated = inst[3]
         if not is_negated and set_data.is_simple:
             return set_data.all_chars, inst[2]
     return None, False
@@ -1488,7 +1517,8 @@ def compute_first_skip(instructions):
             if inst[2]:
                 first[c.upper()] = True
         elif op == OP_SET:
-            set_struct, is_negated = inst[1]
+            set_struct = inst[1]
+            is_negated = inst[3]
             if not set_struct.is_simple:
                 return None
             is_ci = inst[2]

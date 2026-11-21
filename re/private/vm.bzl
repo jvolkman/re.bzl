@@ -10,6 +10,7 @@ load(
     "OP_ANY",
     "OP_ANY_NO_NL",
     "OP_CHAR",
+    "OP_EPSILON_START",
     "OP_GREEDY_LOOP",
     "OP_JUMP",
     "OP_MATCH",
@@ -138,8 +139,8 @@ _STRING_TYPE = type("")
 _WORD_CHARS = {c: True for c in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_".elems()}
 
 def _char_in_set(set_struct, c):
-    """Checks if character c is in the set_struct."""
-    if c in ORD_LOOKUP:
+    """Checks if character c is in a complex set_struct (with negated POSIX classes)."""
+    if set_struct.ascii_bitmap != None and c in ORD_LOOKUP:
         if set_struct.ascii_bitmap[ORD_LOOKUP[c]]:
             return True
 
@@ -159,182 +160,15 @@ def _char_in_set(set_struct, c):
     return False
 
 # buildifier: disable=list-append
-# buildifier: disable=function-docstring-args
-def _get_epsilon_closure(instructions, input_str, input_len, start_pc, start_regs, current_idx, visited, visited_gen, visited_last, loop_cache, input_lower = None):
-    reachable = []
-    num_inst = len(instructions)
-
-    # Thompson NFA: The first time we reach a PC, it's via the highest priority path.
-    stack = [(start_pc, start_regs)]
-
-    # Outer loop handles exploration from stack.
-    # Inner loop follows single-thread transitions.
-    # Each pc is reached at most (visited_last - visited_gen + 1) times at this
-    # position (see compute_visit_limit), which bounds both the number of threads
-    # and the length of any epsilon chain.
-    limit = num_inst * (visited_last - visited_gen + 1) + 100
-
-    for _ in range(limit):
-        if not stack:
-            break
-        pc, regs = stack.pop()
-
-        # Inner loop to follow a thread's epsilon transitions.
-        for _ in range(limit):
-            if visited[pc] < visited_gen:
-                visited[pc] = visited_gen
-            elif visited[pc] < visited_last:
-                visited[pc] += 1
-            else:
-                # PC already fully explored in this generation; drop this thread.
-                # (`continue` here would spin on the same pc for inner_limit iterations.)
-                break
-
-            if pc >= num_inst:
-                break
-
-            inst = instructions[pc]
-            itype = inst[0]
-
-            if itype == OP_JUMP:
-                pc = inst[2]  # arg1 = target
-                # Continue loop to process new pc
-
-            elif itype == OP_SPLIT:
-                # Add both branches
-                pc1 = inst[2]  # arg1
-                pc2 = inst[3]  # arg2
-
-                if inst[1] != None and visited[inst[1]] >= visited_gen:
-                    # A marked SPLIT (see _loop_back_mark): the back edge of a loop whose
-                    # body can match empty, or an optional copy of such a body in
-                    # `{n,m}`. The pc it checks (the loop's entry, or the previous copy's
-                    # SPLIT) was already reached at this position: the iteration that
-                    # just ended matched nothing, or a thread with higher priority already
-                    # started an iteration here. Either way, don't start another one; exit.
-                    pc = pc2 if pc1 < pc2 else pc1
-                else:
-                    # Push lower priority (pc2) first so we follow pc1 (higher priority) immediately
-                    # DFS order matters for priority
-                    stack += [(pc2, regs)]
-                    pc = pc1
-
-                # Continue loop to process pc
-
-            elif itype == OP_SAVE:
-                group_idx = inst[2]  # arg1 = slot
-                regs = regs[:]  # Copy on write
-                regs[group_idx] = current_idx
-
-                # If this is the end of a capturing group (idx >= 3 and odd), update lastindex
-                if group_idx >= 3 and group_idx % 2 == 1:
-                    regs[-1] = group_idx // 2
-                pc += 1
-            elif itype == OP_WORD_BOUNDARY or itype == OP_NOT_WORD_BOUNDARY:
-                is_prev_word = (current_idx > 0 and input_str[current_idx - 1] in _WORD_CHARS)
-                is_curr_word = (current_idx < input_len and input_str[current_idx] in _WORD_CHARS)
-                match = (is_prev_word != is_curr_word) if itype == OP_WORD_BOUNDARY else (is_prev_word == is_curr_word)
-                if match:
-                    pc += 1
-                else:
-                    break
-            elif itype == OP_ANCHOR_LINE_START:
-                if current_idx == 0 or input_str[current_idx - 1] == "\n":
-                    pc += 1
-                else:
-                    break
-            elif itype == OP_ANCHOR_LINE_END:
-                if current_idx == input_len or input_str[current_idx] == "\n":
-                    pc += 1
-                else:
-                    break
-            elif itype == OP_ANCHOR_START:
-                if current_idx == 0:
-                    pc += 1
-                else:
-                    break
-            elif itype == OP_ANCHOR_END:
-                if current_idx == input_len:
-                    pc += 1
-                else:
-                    break
-            elif itype == OP_GREEDY_LOOP:
-                # Optimized x* loop logic with Cache
-                chars = inst[1]  # val
-                match_len = 0
-                is_ci = inst[3]  # arg2 = is_ci
-
-                # Check cache
-                last_end = loop_cache.get(pc, -1)
-
-                if last_end >= current_idx:
-                    match_len = last_end - current_idx
-                else:
-                    # Compute and cache. The run stops at input_len (endpos): the loop
-                    # only exits once it has consumed the whole run.
-                    if is_ci and input_lower != None:
-                        match_len = _windowed_lstrip(input_lower, chars, current_idx, input_len)
-                    else:
-                        match_len = _windowed_lstrip(input_str, chars, current_idx, input_len, lower = is_ci)
-                    loop_cache[pc] = current_idx + match_len
-
-                if match_len == 0:
-                    # Epsilon transition to Exit
-                    pc = inst[2]  # arg1 = exit_pc
-                    # Continue loop to process new pc
-
-                else:
-                    reachable += [(pc, regs)]
-                    break
-            elif itype == OP_UNGREEDY_LOOP:
-                # Optimized x*? loop logic with Cache
-                if visited[pc] == visited_gen:
-                    # First visit: Epsilon path (high priority)
-                    # Stay in epsilon expansion loop for exit_pc
-                    stack += [(pc, regs)]  # Push to stack for second visit (low priority)
-                    pc = inst[2]  # arg1 = exit_pc
-                else:
-                    # Second visit (visited[pc] > visited_gen; any later one only repeats it):
-                    # Consuming path (low priority)
-                    # Use cache to check if we can consume
-                    chars = inst[1]  # val
-                    is_ci = inst[3]  # arg2 = is_ci
-                    last_end = loop_cache.get(pc, -1)
-                    match_len = 0
-
-                    if last_end >= current_idx:
-                        match_len = last_end - current_idx
-                    else:
-                        # Compute and cache
-                        if is_ci and input_lower != None:
-                            match_len = _windowed_lstrip(input_lower, chars, current_idx, input_len)
-                        else:
-                            match_len = _windowed_lstrip(input_str, chars, current_idx, input_len, lower = is_ci)
-                        loop_cache[pc] = current_idx + match_len
-
-                    if match_len > 0:
-                        reachable += [(pc, regs)]
-                    break
-
-            else:
-                # Consuming instruction (CHAR, SET etc)
-                # Add to reachable and stop
-                reachable += [(pc, regs)]
-                break
-
-    return reachable
-
-# buildifier: disable=list-append
 def _process_batch(instructions, batch, input_str, current_idx, input_len, input_lower, require_end = False, lower_on_demand = False, forbid_empty_at = -1):
     """Processes a batch of threads against the current character.
 
     batch is a list of (pc, regs, skip_idx) in priority order (index 0 is highest).
-    Returns (next_threads_list, best_match_regs, matched_priority_index).
+    Returns (next_threads_list, best_match_regs).
     """
     next_threads_list = []
     next_threads_dict = {}
     best_match_regs = None
-    matched_priority_index = -1
 
     char = input_str[current_idx] if current_idx < input_len else None
     char_lower = None
@@ -346,14 +180,11 @@ def _process_batch(instructions, batch, input_str, current_idx, input_len, input
 
     # Process in priority order (0 = highest)
     next_idx = current_idx + 1
-    for i in range(len(batch)):
-        pc, regs, skip_idx = batch[i]
+    for pc, regs, skip_idx in batch:
         if skip_idx > current_idx:
-            # Still skipping due to previous OP_STRING match.
-            # Just pass it along while maintaining priority.
-            # A thread is its pc and the index it resumes at: it only duplicates a
-            # thread that resumes at the same index. Single-character steps resume at
-            # next_idx and are keyed by the pc alone, others by (pc, index).
+            # Still skipping due to a previous OP_STRING or OP_GREEDY_LOOP match.
+            # Pass it along while maintaining priority. Single-character steps resume
+            # at next_idx and are keyed by pc alone; others by (pc, index).
             key = pc if skip_idx == next_idx else (pc, skip_idx)
             if key not in next_threads_dict:
                 next_threads_dict[key] = True
@@ -372,13 +203,10 @@ def _process_batch(instructions, batch, input_str, current_idx, input_len, input
                 # seeded there exist yet, so this match is empty. It is a dead thread,
                 # not a result: lower-priority threads may still match non-empty.
                 continue
-            if best_match_regs == None:
-                best_match_regs = regs
-                matched_priority_index = i
+            best_match_regs = regs
 
             # PRUNING: Once a match is found, no lower-priority thread can EVER win
             # for the current or any FUTURE character position (leftmost-priority).
-            # We stop processing the current batch AND return the match.
             break
 
         if char == None:
@@ -386,11 +214,18 @@ def _process_batch(instructions, batch, input_str, current_idx, input_len, input
 
         match_found = False
         if itype == OP_CHAR:
-            check_char = char_lower if inst[2] else char  # arg1 = is_ci
-            match_found = (inst[1] == check_char)  # val
+            check_char = char_lower if inst[2] else char
+            match_found = (inst[1] == check_char)
+        elif itype == OP_SET:
+            set_struct = inst[1]
+            c_check = char_lower if inst[2] else char
+            if set_struct.is_simple:
+                match_found = ((c_check in set_struct.lookup) != inst[3])
+            else:
+                match_found = (_char_in_set(set_struct, c_check) != inst[3])
         elif itype == OP_STRING:
-            s = inst[1]  # val
-            if inst[2]:  # arg1 = is_ci
+            s = inst[1]
+            if inst[2]:
                 if input_lower != None:
                     match_found = input_lower.startswith(s, current_idx)
                 elif lower_on_demand:
@@ -411,32 +246,17 @@ def _process_batch(instructions, batch, input_str, current_idx, input_len, input
             match_found = True
         elif itype == OP_ANY_NO_NL:
             match_found = (char != "\n")
-        elif itype == OP_SET:
-            set_struct, is_negated = inst[1]  # val
-            is_ci = inst[2]  # arg1 = is_ci
-            c_check = char_lower if is_ci else char
-
-            if c_check in ORD_LOOKUP:
-                match_found = (set_struct.ascii_bitmap[ORD_LOOKUP[c_check]] != is_negated)
-            else:
-                match_found = (_char_in_set(set_struct, c_check) != is_negated)
-        elif itype == OP_GREEDY_LOOP or itype == OP_UNGREEDY_LOOP:
-            is_ci = inst[3]  # arg2 = is_ci
-            if is_ci:
-                match_found = (char_lower in inst[1])  # val
-            else:
-                match_found = (char in inst[1])  # val
+        elif itype == OP_UNGREEDY_LOOP:
+            # Already verified to match at current_idx during epsilon expansion.
+            match_found = True
 
         if match_found:
-            next_pc = pc
-            if itype != OP_GREEDY_LOOP and itype != OP_UNGREEDY_LOOP:
-                next_pc = pc + 1
-
+            next_pc = pc if itype == OP_UNGREEDY_LOOP else pc + 1
             if next_pc not in next_threads_dict:
                 next_threads_dict[next_pc] = True
                 next_threads_list += [(next_pc, regs, next_idx)]
 
-    return next_threads_list, best_match_regs, matched_priority_index
+    return next_threads_list, best_match_regs
 
 # buildifier: disable=list-append
 def execute(instructions, input_str, num_regs, start_index = 0, end_index = None, initial_regs = None, anchored = False, has_case_insensitive = False, input_lower = None, require_end = False, first_skip = None, must_advance = False, visit_limit = 2):
@@ -476,13 +296,13 @@ def execute(instructions, input_str, num_regs, start_index = 0, end_index = None
         else:
             input_lower = input_str.lower()
 
-    # Word boundaries are checked lazily (O(1) per check) in _get_epsilon_closure.
-    # Precomputing a mask over the entire input here would cost O(len(input)) on
-    # every call, which dominates repeated match()/search() calls on large inputs.
-
-    visited = [0] * len(instructions)
+    num_inst = len(instructions)
+    visited = [0] * num_inst
     visited_gen = 0
     loop_cache = {}
+
+    # Pre-allocate the bounded iteration range once for epsilon expansion.
+    step_range = range(num_inst * visit_limit + 100)
 
     # Unanchored searches seed a start thread at every position below.
     current_threads = [] if not anchored else [(0, initial_regs, 0)]
@@ -503,8 +323,31 @@ def execute(instructions, input_str, num_regs, start_index = 0, end_index = None
                 # No remaining position can begin a (non-empty) match.
                 break
             char_idx += skip
+        elif current_threads:
+            # If all active threads are skipping past char_idx (e.g. from OP_STRING
+            # or OP_GREEDY_LOOP), jump directly to min_skip when no new start threads
+            # are needed, or skip past first_skip chars up to min_skip otherwise.
+            min_skip = current_threads[0][2]
+            if min_skip > char_idx:
+                for _, _, s_skip in current_threads:
+                    if s_skip < min_skip:
+                        min_skip = s_skip
+                if min_skip > char_idx:
+                    if anchored or best_match_regs != None:
+                        char_idx = min_skip
+                        if char_idx > input_len:
+                            break
+                    elif use_skip:
+                        char_idx += _windowed_lstrip(input_str, first_skip, char_idx, min_skip)
 
-        # Expand epsilon closure for current threads
+        # Leftmost-first semantics: once a match has been found, a thread seeded at a
+        # later start position can never win, so stop seeding new start positions.
+        # Also skip seeding at characters that can never begin a match.
+        if not anchored and best_match_regs == None:
+            if first_skip == None or (char_idx < input_len and input_str[char_idx] not in first_skip):
+                current_threads += [(0, initial_regs, char_idx)]
+
+        # Expand epsilon closure for current threads (inlined to avoid per-thread call overhead).
         visited_gen += visit_limit + 1
         visited_last = visited_gen + visit_limit - 1
         expanded_batch = []
@@ -515,27 +358,124 @@ def execute(instructions, input_str, num_regs, start_index = 0, end_index = None
                 expanded_batch += [(s_pc, s_regs, s_skip)]
                 continue
 
-            closure = _get_epsilon_closure(instructions, input_str, input_len, s_pc, s_regs, char_idx, visited, visited_gen, visited_last, loop_cache, input_lower = input_lower)
-            for c_pc, c_regs in closure:
-                expanded_batch += [(c_pc, c_regs, char_idx)]
+            if instructions[s_pc][0] < OP_EPSILON_START:
+                if visited[s_pc] < visited_gen:
+                    visited[s_pc] = visited_gen
+                    expanded_batch += [(s_pc, s_regs, char_idx)]
+                elif visited[s_pc] < visited_last:
+                    visited[s_pc] += 1
+                    expanded_batch += [(s_pc, s_regs, char_idx)]
+                continue
 
-        # Leftmost-first semantics: once a match has been found, a thread seeded at a
-        # later start position can never win, so stop seeding new start positions.
-        if not anchored and best_match_regs == None:
-            if visited[0] < visited_gen or visited[0] < visited_last:
-                closure0 = _get_epsilon_closure(instructions, input_str, input_len, 0, initial_regs, char_idx, visited, visited_gen, visited_last, loop_cache, input_lower = input_lower)
-                for c_pc, c_regs in closure0:
-                    expanded_batch += [(c_pc, c_regs, char_idx)]
+            stack = [(s_pc, s_regs)]
+            for _ in step_range:
+                if not stack:
+                    break
+                pc, regs = stack.pop()
+
+                for _ in step_range:
+                    if visited[pc] < visited_gen:
+                        visited[pc] = visited_gen
+                    elif visited[pc] < visited_last:
+                        visited[pc] += 1
+                    else:
+                        break
+
+                    inst = instructions[pc]
+                    itype = inst[0]
+
+                    if itype < OP_EPSILON_START:
+                        expanded_batch += [(pc, regs, char_idx)]
+                        break
+
+                    if itype == OP_SPLIT:
+                        pc1 = inst[2]
+                        pc2 = inst[3]
+                        if inst[1] != None and visited[inst[1]] >= visited_gen:
+                            # A marked SPLIT (see _loop_back_mark): exit instead of
+                            # starting another iteration after an empty one.
+                            pc = pc2 if pc1 < pc2 else pc1
+                        else:
+                            stack += [(pc2, regs)]
+                            pc = pc1
+                    elif itype == OP_SAVE:
+                        group_idx = inst[2]
+                        regs = regs[:]  # Copy on write
+                        regs[group_idx] = char_idx
+                        if group_idx >= 3 and group_idx % 2 == 1:
+                            regs[-1] = group_idx // 2
+                        pc += 1
+                    elif itype == OP_JUMP:
+                        pc = inst[2]
+                    elif itype == OP_WORD_BOUNDARY or itype == OP_NOT_WORD_BOUNDARY:
+                        is_prev_word = (char_idx > 0 and input_str[char_idx - 1] in _WORD_CHARS)
+                        is_curr_word = (char_idx < input_len and input_str[char_idx] in _WORD_CHARS)
+                        if (is_prev_word != is_curr_word) == (itype == OP_WORD_BOUNDARY):
+                            pc += 1
+                        else:
+                            break
+                    elif itype == OP_ANCHOR_LINE_START:
+                        if char_idx == 0 or input_str[char_idx - 1] == "\n":
+                            pc += 1
+                        else:
+                            break
+                    elif itype == OP_ANCHOR_LINE_END:
+                        if char_idx == input_len or input_str[char_idx] == "\n":
+                            pc += 1
+                        else:
+                            break
+                    elif itype == OP_ANCHOR_START:
+                        if char_idx == 0:
+                            pc += 1
+                        else:
+                            break
+                    elif itype == OP_ANCHOR_END:
+                        if char_idx == input_len:
+                            pc += 1
+                        else:
+                            break
+                    elif itype == OP_GREEDY_LOOP:
+                        # Optimized disjoint x* loop: skip straight to exit_pc at end of run.
+                        last_end = loop_cache.get(pc, -1)
+                        if last_end >= char_idx:
+                            match_len = last_end - char_idx
+                        else:
+                            is_ci = inst[3]
+                            if is_ci and input_lower != None:
+                                match_len = _windowed_lstrip(input_lower, inst[1], char_idx, input_len)
+                            else:
+                                match_len = _windowed_lstrip(input_str, inst[1], char_idx, input_len, lower = is_ci)
+                            loop_cache[pc] = char_idx + match_len
+
+                        if match_len == 0:
+                            pc = inst[2]
+                        else:
+                            expanded_batch += [(inst[2], regs, char_idx + match_len)]
+                            break
+                    elif itype == OP_UNGREEDY_LOOP:
+                        if visited[pc] == visited_gen:
+                            # First visit: epsilon exit (higher priority).
+                            stack += [(pc, regs)]
+                            pc = inst[2]
+                        else:
+                            # Second visit: consume one character if it matches (lower priority).
+                            if char_idx < input_len:
+                                if inst[3]:
+                                    c_loop = input_lower[char_idx] if input_lower != None else input_str[char_idx].lower()
+                                else:
+                                    c_loop = input_str[char_idx]
+                                if c_loop in inst[1]:
+                                    expanded_batch += [(pc, regs, char_idx)]
+                            break
 
         if not expanded_batch and anchored:
             break
 
         next_threads = []
         batch_match = None
-        matched_priority_index = -1
 
         if expanded_batch:
-            next_threads, batch_match, matched_priority_index = _process_batch(
+            next_threads, batch_match = _process_batch(
                 instructions,
                 expanded_batch,
                 input_str,
@@ -548,20 +488,9 @@ def execute(instructions, input_str, num_regs, start_index = 0, end_index = None
             )
 
         if batch_match:
-            new_regs = batch_match
-            new_start = new_regs[0]
-
-            # Leftmost priority
-            if best_match_regs == None or new_start < best_match_regs[0]:
-                best_match_regs = new_regs
-            elif new_start == best_match_regs[0]:
-                # For same start, matches are discovered in priority order.
-                # If matched_priority_index is 0, it means it's the absolute best match
-                # for this start position.
-                best_match_regs = new_regs
-                if matched_priority_index == 0:
-                    # Early termination: No character step can ever improve this match.
-                    return best_match_regs
+            new_start = batch_match[0]
+            if best_match_regs == None or new_start <= best_match_regs[0]:
+                best_match_regs = batch_match
 
         current_threads = next_threads
 

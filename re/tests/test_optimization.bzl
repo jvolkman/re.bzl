@@ -222,11 +222,9 @@ def _run_windowed_strip_tests(env):
         assert_span(env, match("xa*", "x" + run), (0, n + 1), "match xa* over %d chars" % n)
         assert_span(env, compile("xa*").match("x" + run + "aa", 0, n + 1), (0, n + 1), "match xa* up to endpos over %d chars" % n)
 
-        # A greedy loop in the NFA (lstrip). Its thread steps once per character, so
-        # the longest run is skipped.
-        if n < 2000:
-            assert_span(env, search("(x)a*$", "x" + run), (0, n + 1), "search (x)a*$ over %d chars" % n)
-            assert_span(env, match("(x)(?i:a*)$", "x" + run.upper()), (0, n + 1), "match (x)(?i:a*)$ over %d chars" % n)
+        # A greedy loop in the NFA (lstrip) skips directly to the end of its run.
+        assert_span(env, search("(x)a*$", "x" + run), (0, n + 1), "search (x)a*$ over %d chars" % n)
+        assert_span(env, match("(x)(?i:a*)$", "x" + run.upper()), (0, n + 1), "match (x)(?i:a*)$ over %d chars" % n)
 
 def _run_incomplete_set_tests(env):
     """Checks that the fast paths don't use a set's all_chars when it's incomplete.
