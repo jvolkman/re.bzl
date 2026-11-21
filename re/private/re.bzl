@@ -117,6 +117,7 @@ def compile(pattern, flags = 0):
         fullmatch = _fullmatch,
         bytecode = bytecode,
         named_groups = named_groups,
+        gid_to_name = {gid: name for name, gid in named_groups.items()},
         group_count = group_count,
         pattern = pattern,
         has_case_insensitive = has_case_insensitive,
@@ -212,10 +213,10 @@ def _find_all_regs(compiled, text, limit = 0):
 
     # At most len(text) + 1 empty and len(text) non-empty matches, plus the final
     # failed search.
-    for _ in range(2 * len(text) + 2):
-        if limit > 0 and len(all_regs) >= limit:
-            break
-
+    max_iters = 2 * len(text) + 2
+    if limit > 0 and limit < max_iters:
+        max_iters = limit
+    for _ in range(max_iters):
         # Use search_regs to avoid creating a MatchObject per match.
         regs = search_regs(bytecode, text, group_count, start_index = start_index, has_case_insensitive = has_case_insensitive, opt = opt, input_lower = input_lower, first_skip = first_skip, must_advance = must_advance, visit_limit = visit_limit)
 
@@ -326,8 +327,13 @@ def sub(pattern, repl, text, count = 0, flags = 0):
 
     # Pre-parse replacement string if it's a string; otherwise it is a function.
     repl_template = None
+    const_repl = None
     if type(repl) == _STRING_TYPE:
         repl_template = parse_replacement_template(repl, compiled.named_groups, group_count)
+        if not repl_template:
+            const_repl = ""
+        elif len(repl_template) == 1 and type(repl_template[0]) == _STRING_TYPE:
+            const_repl = repl_template[0]
 
     res_parts = []
     last_idx = 0
@@ -339,22 +345,15 @@ def sub(pattern, repl, text, count = 0, flags = 0):
         res_parts += [text[last_idx:match_start]]
 
         # Calculate replacement
-        if repl_template == None:
+        if const_repl != None:
+            replacement = const_repl
+        elif repl_template == None:
             # Slow path: Create proper match object using vm.MatchObject.
             # Like Python, pos/endpos describe the whole sub() call.
             m = MatchObject(text, regs, compiled, 0, text_len)
             replacement = repl(m)
         else:
-            # Construct groups tuple only if needed
-            groups = []
-            for i in range(1, group_count + 1):
-                s = regs[i * 2]
-                e = regs[i * 2 + 1]
-                if s == -1:
-                    groups += [None]
-                else:
-                    groups += [text[s:e]]
-            replacement = expand_template(repl_template, text[match_start:match_end], tuple(groups))
+            replacement = expand_template(repl_template, text, regs)
 
         res_parts += [replacement]
         last_idx = match_end

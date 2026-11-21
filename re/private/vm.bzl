@@ -697,13 +697,13 @@ def parse_replacement_template(repl, named_groups = {}, group_count = None):
     return tokens
 
 # buildifier: disable=list-append
-def expand_template(template, match_str, groups):
-    """Expands a parsed replacement template.
+def expand_template(template, text, regs):
+    """Expands a parsed replacement template directly from text and match registers.
 
     Args:
-      template: List of tokens (strings or ints).
-      match_str: The full matched string.
-      groups: Tuple of captured groups.
+      template: List of tokens (strings for literals, ints for group IDs).
+      text: The source text.
+      regs: Flat register list for the match.
 
     Returns:
       The expanded replacement string.
@@ -713,13 +713,9 @@ def expand_template(template, match_str, groups):
         if type(token) == _STRING_TYPE:
             res += [token]
         else:
-            gid = token
-            if gid == 0:
-                res += [match_str]
-            elif gid <= len(groups):
-                val = groups[gid - 1]
-                if val != None:
-                    res += [val]
+            s = regs[token * 2]
+            if s != -1:
+                res += [text[s:regs[token * 2 + 1]]]
 
     return "".join(res)
 
@@ -1146,6 +1142,8 @@ def MatchObject(text, regs, compiled, pos, endpos):
     """
 
     def group(n = 0):
+        if n == 0:
+            return text[regs[0]:regs[1]]
         if type(n) == _STRING_TYPE:
             if n in compiled.named_groups:
                 n = compiled.named_groups[n]
@@ -1183,6 +1181,8 @@ def MatchObject(text, regs, compiled, pos, endpos):
         return res
 
     def span(n = 0):
+        if n == 0:
+            return (regs[0], regs[1])
         if type(n) == _STRING_TYPE:
             if n in compiled.named_groups:
                 n = compiled.named_groups[n]
@@ -1194,21 +1194,20 @@ def MatchObject(text, regs, compiled, pos, endpos):
         return (regs[n * 2], regs[n * 2 + 1])
 
     def start(n = 0):
+        if n == 0:
+            return regs[0]
         return span(n)[0]
 
     def end(n = 0):
+        if n == 0:
+            return regs[1]
         return span(n)[1]
 
     lastindex = regs[-1]
     if lastindex == -1:
         lastindex = None
 
-    lastgroup = None
-    if lastindex != None:
-        for name, gid in compiled.named_groups.items():
-            if gid == lastindex:
-                lastgroup = name
-                break
+    lastgroup = compiled.gid_to_name.get(lastindex) if lastindex != None else None
 
     return struct(
         group = group,
