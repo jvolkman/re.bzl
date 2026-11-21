@@ -522,8 +522,8 @@ def execute(instructions, input_str, num_regs, start_index = 0, end_index = None
         # Leftmost-first semantics: once a match has been found, a thread seeded at a
         # later start position can never win, so stop seeding new start positions.
         if not anchored and best_match_regs == None:
-            if visited[0] <= visited_last:
-                closure0 = _get_epsilon_closure(instructions, input_str, input_len, 0, initial_regs[:], char_idx, visited, visited_gen, visited_last, loop_cache, input_lower = input_lower)
+            if visited[0] < visited_gen or visited[0] < visited_last:
+                closure0 = _get_epsilon_closure(instructions, input_str, input_len, 0, initial_regs, char_idx, visited, visited_gen, visited_last, loop_cache, input_lower = input_lower)
                 for c_pc, c_regs in closure0:
                     expanded_batch += [(c_pc, c_regs, char_idx)]
 

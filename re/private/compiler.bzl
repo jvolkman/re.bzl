@@ -1517,28 +1517,40 @@ def compute_first_skip(instructions):
     skip = "".join([c for c in _CHR_LOOKUP.elems() if c not in first])
     return skip if skip else None
 
+# buildifier: disable=list-append
 def compute_visit_limit(instructions):
     """Computes how many times the VM may reach one pc at one input position.
 
-    Twice is enough for most patterns (OP_UNGREEDY_LOOP exits on the first visit and
-    consumes on the second). A loop whose body can match empty (a marked back edge,
-    see _loop_back_mark) can start an iteration at the position where a thread
-    reached it. So a pc inside n such loops, one inside the other, can be reached
-    in n + 1 different states at one position: by a thread that got there by
-    consuming, and by one for each loop that started an iteration there. Each state
-    must get its visit. `(?:(?:|.)*)*a` matches "ca" in "caa" only if the inner
-    loop's back edge is reached three times at 1: after "c", after the inner loop's
-    empty second iteration, and after its empty first iteration in the outer loop's
-    second iteration.
+    Once is enough for standard Thompson NFA patterns. An OP_UNGREEDY_LOOP needs
+    two visits (exit on the first, consume on the second). A loop whose body can
+    match empty (a marked back edge, see _loop_back_mark) can start an iteration
+    at the position where a thread reached it. So a pc inside n such loops, one
+    inside the other, can be reached in n + 1 different states at one position: by
+    a thread that got there by consuming, and by one for each loop that started
+    an iteration there. Each state must get its visit. `(?:(?:|.)*)*a` matches
+    "ca" in "caa" only if the inner loop's back edge is reached three times at 1:
+    after "c", after the inner loop's empty second iteration, and after its empty
+    first iteration in the outer loop's second iteration.
 
     Args:
       instructions: The optimized bytecode.
 
     Returns:
-      2, or one more than the deepest nesting of loops whose body can match empty.
+      1 for standard patterns, 2 for patterns with an ungreedy loop or a single
+      nullable loop, or one more than the deepest nesting of nullable loops.
     """
-    marked = [j for j, inst in enumerate(instructions) if inst[0] == OP_SPLIT and inst[1] != None and inst[1] < j and (inst[2] == inst[1] or inst[3] == inst[1])]
-    if len(marked) < 2:
+    marked = []
+    has_ungreedy = False
+    for j, inst in enumerate(instructions):
+        op = inst[0]
+        if op == OP_UNGREEDY_LOOP:
+            has_ungreedy = True
+        elif op == OP_SPLIT and inst[1] != None and inst[1] < j and (inst[2] == inst[1] or inst[3] == inst[1]):
+            marked += [j]
+
+    if not marked:
+        return 2 if has_ungreedy else 1
+    if len(marked) == 1:
         return 2
     depth = [0] * len(instructions)
     for j in marked:
