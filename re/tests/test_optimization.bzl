@@ -179,6 +179,16 @@ def _run_search_end_anchored_tests(env):
     assert_span(env, compile("^a|b").search("xab"), (2, 3), "alt_dispatch search respects anchored branch")
     assert_span(env, compile("(?i)true|false").search("xxFALSE"), (2, 7), "alt_dispatch CI search")
     assert_span(env, compile("a|[^a]b").search("世界b"), (len("世界b") - 2, len("世界b")), "alt_dispatch non-ASCII branch")
+    assert_span(env, compile("a|b").match(""), None, "alt_dispatch match on empty string")
+    assert_span(env, compile("a|b").fullmatch(""), None, "alt_dispatch fullmatch on empty string")
+
+    # alt_dispatch fallback when two branches share a first char and have inner/outer captures.
+    p_shared = compile(r"(?P<AB>a(b))|(?P<AC>a(c))|(?P<D>d+)")
+    assert_eq(env, p_shared.alt_dispatch != None, True, "shared-first-char alternation builds alt_dispatch")
+    m_ac = p_shared.match("ac")
+    assert_eq(env, (m_ac.lastgroup, m_ac.lastindex, m_ac.groups()), ("AC", 3, (None, None, "ac", "c", None)), "alt_dispatch shared first char fallback captures")
+    m_d = p_shared.search("xxddd", 1, 4)
+    assert_eq(env, (m_d.span(), m_d.lastgroup, m_d.group("D")), ((2, 4), "D", "dd"), "alt_dispatch search with pos/endpos")
 
 def _run_search_suffix_endpos_tests(env):
     """Checks that the suffix search fast path honors endpos."""
@@ -258,6 +268,12 @@ def _run_windowed_strip_tests(env):
         # A greedy loop in the NFA (lstrip) skips directly to the end of its run.
         assert_span(env, search("(x)a*$", "x" + run), (0, n + 1), "search (x)a*$ over %d chars" % n)
         assert_span(env, match("(x)(?i:a*)$", "x" + run.upper()), (0, n + 1), "match (x)(?i:a*)$ over %d chars" % n)
+
+        # Negated-set loops across window boundaries (1-stop, 2-stop, and complement lstrip).
+        assert_span(env, match(r"#[^\n]*", "#" + run + "\n"), (0, n + 1), "match #[^\\n]* over %d chars" % n)
+        assert_span(env, match(r"[^\"\\]+", run + "\\"), (0, n), "match [^\"\\\\]+ over %d chars" % n)
+        assert_span(env, match(r"\D+", run + "9"), (0, n), "match \\D+ over %d chars" % n)
+        assert_span(env, match(r"a([^x]*)b", "a" + run + "b"), (0, n + 2), "NFA OP_NEG_GREEDY_LOOP over %d chars" % n)
 
 def _run_incomplete_set_tests(env):
     """Checks that the fast paths don't use a set's all_chars when it's incomplete.

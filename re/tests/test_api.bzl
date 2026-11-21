@@ -400,3 +400,12 @@ def run_tests_api(env):
     assert_eq(env, sc_neg.match("a", 0), None, "scanner negated class rejects excluded char")
     assert_eq(env, sc_neg.match("b", 0), ("NOT_A", 1), "scanner negated class accepts other char")
     assert_eq(env, scanner([("EOF", "$")]).match("abc", 3), ("EOF", 3), "scanner.match handles zero-width rule at endpos")
+
+    # Multi-char literal truncated by endpos, pre-compiled rule flags, and out-of-bounds pos/endpos.
+    sc_lit = scanner([("EQ2", "=="), ("EQ", "=")])
+    assert_eq(env, sc_lit.match("==", 0, 1), ("EQ", 1), "scanner multi-char literal respects endpos")
+    assert_eq(env, sc_lit.scan("==", 0, 1), ([("EQ", 0, 1)], 1), "scanner.scan multi-char literal respects endpos")
+    assert_eq(env, sc_lit.scan("==", pos = 2, endpos = 1), ([], 2), "scanner.scan with pos > endpos")
+    sc_pre = scanner([("CI", compile("abc", flags = IGNORECASE)), ("CS", "def")])
+    assert_eq(env, sc_pre.match("ABC", 0), ("CI", 3), "scanner preserves flags on pre-compiled pattern")
+    assert_eq(env, sc_pre.match("DEF", 0), None, "scanner default flags do not leak from pre-compiled rule")
