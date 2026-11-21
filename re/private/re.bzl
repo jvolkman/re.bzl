@@ -32,9 +32,9 @@ def compile(pattern, flags = 0):
 
     Returns:
       A struct containing the compiled bytecode and methods:
-      - search(text): Scans text for a match. Returns a MatchObject or None.
-      - match(text): Checks for a match at the beginning of text. Returns a MatchObject or None.
-      - fullmatch(text): Checks for a match of the entire text. Returns a MatchObject or None.
+      - search(text, pos=0, endpos=None): Scans text for a match. Returns a MatchObject or None.
+      - match(text, pos=0, endpos=None): Checks for a match at pos. Returns a MatchObject or None.
+      - fullmatch(text, pos=0, endpos=None): Checks for a match of the entire slice text[pos:endpos]. Returns a MatchObject or None.
       - pattern: The pattern string.
       - group_count: The number of capturing groups.
 
