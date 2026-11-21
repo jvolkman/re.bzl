@@ -2,6 +2,7 @@
 
 load(
     "//re/private:compiler.bzl",
+    "build_alt_dispatch",
     "compile_regex",
     "compute_first_skip",
     "compute_visit_limit",
@@ -11,7 +12,9 @@ load(
     "//re/private:vm.bzl",
     "MatchObject",
     "expand_template",
+    "fullmatch_alt_regs",
     "fullmatch_regs",
+    "match_alt_regs",
     "match_regs",
     "parse_replacement_template",
     "search_regs",
@@ -57,6 +60,7 @@ def compile(pattern, flags = 0):
 
     bytecode, named_groups, group_count, has_case_insensitive = compile_regex(pattern, flags = flags)
     opt = optimize_matcher(bytecode)
+    alt_dispatch = build_alt_dispatch(bytecode, group_count) if opt == None else None
     first_skip = compute_first_skip(bytecode)
     visit_limit = compute_visit_limit(bytecode)
     self_ref = [None]
@@ -70,7 +74,7 @@ def compile(pattern, flags = 0):
             endpos = 0
         if pos < 0 or pos > n:
             pos = 0 if pos < 0 else n
-        regs = search_regs(bytecode, text, group_count, start_index = pos, end_index = endpos, has_case_insensitive = has_case_insensitive, opt = opt, first_skip = first_skip, visit_limit = visit_limit)
+        regs = search_regs(bytecode, text, group_count, start_index = pos, end_index = endpos, has_case_insensitive = has_case_insensitive, opt = opt, first_skip = first_skip, visit_limit = visit_limit, alt_dispatch = alt_dispatch)
         if not regs:
             return None
         return MatchObject(text, regs, self_ref[0], pos, endpos)
@@ -90,7 +94,10 @@ def compile(pattern, flags = 0):
             endpos = 0
         if pos < 0 or pos > n:
             pos = 0 if pos < 0 else n
-        regs = match_regs(bytecode, text, group_count, start_index = pos, end_index = endpos, has_case_insensitive = has_case_insensitive, opt = opt, first_skip = first_skip, visit_limit = visit_limit)
+        if alt_dispatch != None:
+            regs = match_alt_regs(alt_dispatch, text, group_count, start_index = pos, end_index = endpos)
+        else:
+            regs = match_regs(bytecode, text, group_count, start_index = pos, end_index = endpos, has_case_insensitive = has_case_insensitive, opt = opt, first_skip = first_skip, visit_limit = visit_limit)
         if not regs:
             return None
         return MatchObject(text, regs, self_ref[0], pos, endpos)
@@ -106,7 +113,10 @@ def compile(pattern, flags = 0):
             endpos = 0
         if pos < 0 or pos > n:
             pos = 0 if pos < 0 else n
-        regs = fullmatch_regs(bytecode, text, group_count, start_index = pos, end_index = endpos, has_case_insensitive = has_case_insensitive, opt = opt, first_skip = first_skip, visit_limit = visit_limit)
+        if alt_dispatch != None:
+            regs = fullmatch_alt_regs(alt_dispatch, text, group_count, start_index = pos, end_index = endpos)
+        else:
+            regs = fullmatch_regs(bytecode, text, group_count, start_index = pos, end_index = endpos, has_case_insensitive = has_case_insensitive, opt = opt, first_skip = first_skip, visit_limit = visit_limit)
         if not regs:
             return None
         return MatchObject(text, regs, self_ref[0], pos, endpos)
@@ -122,6 +132,7 @@ def compile(pattern, flags = 0):
         pattern = pattern,
         has_case_insensitive = has_case_insensitive,
         opt = opt,
+        alt_dispatch = alt_dispatch,
         first_skip = first_skip,
         visit_limit = visit_limit,
     )
@@ -200,6 +211,7 @@ def _find_all_regs(compiled, text, limit = 0):
     group_count = compiled.group_count
     has_case_insensitive = compiled.has_case_insensitive
     opt = compiled.opt
+    alt_dispatch = compiled.alt_dispatch
     first_skip = compiled.first_skip
     visit_limit = compiled.visit_limit
 
@@ -218,7 +230,7 @@ def _find_all_regs(compiled, text, limit = 0):
         max_iters = limit
     for _ in range(max_iters):
         # Use search_regs to avoid creating a MatchObject per match.
-        regs = search_regs(bytecode, text, group_count, start_index = start_index, has_case_insensitive = has_case_insensitive, opt = opt, input_lower = input_lower, first_skip = first_skip, must_advance = must_advance, visit_limit = visit_limit)
+        regs = search_regs(bytecode, text, group_count, start_index = start_index, has_case_insensitive = has_case_insensitive, opt = opt, input_lower = input_lower, first_skip = first_skip, must_advance = must_advance, visit_limit = visit_limit, alt_dispatch = alt_dispatch)
 
         # regs[0] == -1 should not happen if search_regs returns non-None.
         if not regs or regs[0] == -1:

@@ -681,7 +681,7 @@ def expand_template(template, text, regs):
 
     return "".join(res)
 
-def search_regs(bytecode, text, group_count, start_index = 0, end_index = None, has_case_insensitive = False, opt = None, input_lower = None, first_skip = None, must_advance = False, visit_limit = 2):
+def search_regs(bytecode, text, group_count, start_index = 0, end_index = None, has_case_insensitive = False, opt = None, input_lower = None, first_skip = None, must_advance = False, visit_limit = 2, alt_dispatch = None):
     """Executes a search returning registers.
 
     The returned `regs` is a flat list of integers representing [start, end] pairs for each group.
@@ -705,6 +705,8 @@ def search_regs(bytecode, text, group_count, start_index = 0, end_index = None, 
         findall/sub/split match was empty and ended there).
       visit_limit: How many times the VM may reach a pc at one position (see
         compute_visit_limit).
+      alt_dispatch: Optional first-character branch dispatch table for top-level
+        alternations (see build_alt_dispatch).
 
     Returns:
       List of registers (start/end indices) or None.
@@ -720,6 +722,35 @@ def search_regs(bytecode, text, group_count, start_index = 0, end_index = None, 
         if must_advance:
             return execute(bytecode, text, (group_count + 1) * 2, end_index = end_index, anchored = True, has_case_insensitive = has_case_insensitive, input_lower = input_lower, must_advance = True, visit_limit = visit_limit)
         return match_regs(bytecode, text, group_count, start_index = 0, end_index = end_index, has_case_insensitive = has_case_insensitive, opt = opt, input_lower = input_lower, first_skip = first_skip, visit_limit = visit_limit)
+
+    if alt_dispatch != None and not must_advance:
+        by_char = alt_dispatch.by_char
+        non_ascii = alt_dispatch.non_ascii
+        pos = start_index
+        for _ in range(effective_len - start_index + 1):
+            if pos >= effective_len:
+                return None
+            if first_skip != None:
+                pos += _windowed_lstrip(text, first_skip, pos, effective_len)
+                if pos >= effective_len:
+                    return None
+            c = text[pos]
+            cands = by_char.get(c) if c in ORD_LOOKUP else non_ascii
+            if cands:
+                for b in cands:
+                    regs = match_regs(b.bytecode, text, b.run_group_count, start_index = pos, end_index = end_index, has_case_insensitive = b.has_ci, opt = b.opt, input_lower = input_lower, visit_limit = b.visit_limit)
+                    if regs != None:
+                        if b.wrap_gid > 0:
+                            full_regs = [-1] * ((group_count + 1) * 2 + 1)
+                            full_regs[0] = regs[0]
+                            full_regs[1] = regs[1]
+                            full_regs[b.wrap_gid * 2] = regs[0]
+                            full_regs[b.wrap_gid * 2 + 1] = regs[1]
+                            full_regs[-1] = b.wrap_gid
+                            return full_regs
+                        return regs
+            pos += 1
+        return None
 
     if input_lower == None and has_case_insensitive:
         input_lower = text.lower()
@@ -886,6 +917,41 @@ def search_regs(bytecode, text, group_count, start_index = 0, end_index = None, 
     num_regs = (group_count + 1) * 2
     return execute(bytecode, text, num_regs, start_index = start_index, end_index = end_index, anchored = False, has_case_insensitive = has_case_insensitive, input_lower = input_lower, first_skip = first_skip, must_advance = must_advance, visit_limit = visit_limit)
 
+def match_alt_regs(alt_dispatch, text, group_count, start_index = 0, end_index = None, input_lower = None):
+    """Executes an anchored match using a top-level alternation dispatch table.
+
+    Args:
+      alt_dispatch: Dispatch struct from build_alt_dispatch.
+      text: The input text.
+      group_count: Total capturing groups in the pattern.
+      start_index: Start index.
+      end_index: End index (optional).
+      input_lower: Pre-calculated lowercase input string.
+
+    Returns:
+      List of registers (start/end indices) or None.
+    """
+    effective_len = len(text) if end_index == None else end_index
+    if start_index >= effective_len:
+        return None
+    c = text[start_index]
+    cands = alt_dispatch.by_char.get(c) if c in ORD_LOOKUP else alt_dispatch.non_ascii
+    if not cands:
+        return None
+    for b in cands:
+        regs = match_regs(b.bytecode, text, b.run_group_count, start_index = start_index, end_index = end_index, has_case_insensitive = b.has_ci, opt = b.opt, input_lower = input_lower, visit_limit = b.visit_limit)
+        if regs != None:
+            if b.wrap_gid > 0:
+                full_regs = [-1] * ((group_count + 1) * 2 + 1)
+                full_regs[0] = regs[0]
+                full_regs[1] = regs[1]
+                full_regs[b.wrap_gid * 2] = regs[0]
+                full_regs[b.wrap_gid * 2 + 1] = regs[1]
+                full_regs[-1] = b.wrap_gid
+                return full_regs
+            return regs
+    return None
+
 def match_regs(bytecode, text, group_count, start_index = 0, end_index = None, has_case_insensitive = False, opt = None, input_lower = None, first_skip = None, visit_limit = 2):
     """Executes a match returning registers.
 
@@ -1031,6 +1097,41 @@ def match_regs(bytecode, text, group_count, start_index = 0, end_index = None, h
 
     num_regs = (group_count + 1) * 2
     return execute(bytecode, text, num_regs, start_index = start_index, end_index = end_index, anchored = True, has_case_insensitive = has_case_insensitive, input_lower = input_lower, visit_limit = visit_limit)
+
+def fullmatch_alt_regs(alt_dispatch, text, group_count, start_index = 0, end_index = None, input_lower = None):
+    """Executes a fullmatch using a top-level alternation dispatch table.
+
+    Args:
+      alt_dispatch: Dispatch struct from build_alt_dispatch.
+      text: The input text.
+      group_count: Total capturing groups in the pattern.
+      start_index: Start index.
+      end_index: End index (optional).
+      input_lower: Pre-calculated lowercase input string.
+
+    Returns:
+      List of registers (start/end indices) or None.
+    """
+    effective_len = len(text) if end_index == None else end_index
+    if start_index >= effective_len:
+        return None
+    c = text[start_index]
+    cands = alt_dispatch.by_char.get(c) if c in ORD_LOOKUP else alt_dispatch.non_ascii
+    if not cands:
+        return None
+    for b in cands:
+        regs = fullmatch_regs(b.bytecode, text, b.run_group_count, start_index = start_index, end_index = end_index, has_case_insensitive = b.has_ci, opt = b.opt, input_lower = input_lower, visit_limit = b.visit_limit)
+        if regs != None:
+            if b.wrap_gid > 0:
+                full_regs = [-1] * ((group_count + 1) * 2 + 1)
+                full_regs[0] = regs[0]
+                full_regs[1] = regs[1]
+                full_regs[b.wrap_gid * 2] = regs[0]
+                full_regs[b.wrap_gid * 2 + 1] = regs[1]
+                full_regs[-1] = b.wrap_gid
+                return full_regs
+            return regs
+    return None
 
 def fullmatch_regs(bytecode, text, group_count, start_index = 0, end_index = None, has_case_insensitive = False, opt = None, input_lower = None, first_skip = None, visit_limit = 2):
     """Executes a full match returning registers.

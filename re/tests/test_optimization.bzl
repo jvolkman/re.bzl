@@ -3,7 +3,7 @@ Tests for fast-path repetition optimizations.
 """
 
 load("@rules_testing//lib:unit_test.bzl", "unit_test")
-load("//re:re.bzl", "compile", "findall", "match", "search", "split", "sub")
+load("//re:re.bzl", "compile", "findall", "finditer", "match", "search", "split", "sub")
 load("//re/tests:utils.bzl", "assert_eq", "assert_span", "run_suite")
 
 def _test_optimization(env):
@@ -163,6 +163,22 @@ def _run_search_end_anchored_tests(env):
     assert_span(env, search(r"(?m)[^a]*$", "b\na"), (0, 1), "search (?m)[^a]*$ gives back newline")
     m_kv = search(r"([^:]*):(.*)", "key:value\nnext")
     assert_eq(env, m_kv.groups() if m_kv else None, ("key", "value"), "search ([^:]*):(.*)")
+
+    # Top-level alternation first-char branch dispatch (including named-group tokenizers).
+    tok_re = compile(r"(?P<WS>[ \t]+)|(?P<COMMENT>#[^\n]*)|(?P<KEY>[A-Za-z_][A-Za-z0-9_\-]*)|(?P<EQ>=)|(?P<NUM>\d+)")
+    assert_eq(env, tok_re.alt_dispatch != None, True, "named-group alternation should build alt_dispatch")
+    toks = [(m.lastgroup, m.group(0)) for m in finditer(tok_re, "key = 42 # note")]
+    assert_eq(
+        env,
+        toks,
+        [("KEY", "key"), ("WS", " "), ("EQ", "="), ("WS", " "), ("NUM", "42"), ("WS", " "), ("COMMENT", "# note")],
+        "finditer with alt_dispatch named-group tokenizer",
+    )
+    assert_span(env, compile("a|ab").match("ab"), (0, 1), "alt_dispatch match respects branch priority")
+    assert_span(env, compile("a|ab").fullmatch("ab"), (0, 2), "alt_dispatch fullmatch tries later branch")
+    assert_span(env, compile("^a|b").search("xab"), (2, 3), "alt_dispatch search respects anchored branch")
+    assert_span(env, compile("(?i)true|false").search("xxFALSE"), (2, 7), "alt_dispatch CI search")
+    assert_span(env, compile("a|[^a]b").search("世界b"), (len("世界b") - 2, len("世界b")), "alt_dispatch non-ASCII branch")
 
 def _run_search_suffix_endpos_tests(env):
     """Checks that the suffix search fast path honors endpos."""

@@ -1489,24 +1489,27 @@ def optimize_matcher(instructions):
     return None
 
 # buildifier: disable=list-append
-def compute_first_skip(instructions):
-    """Computes the characters that can never begin a match.
+def compute_first_chars(instructions):
+    """Computes the set of characters that can begin a match.
 
-    The VM uses this to skip, via a native lstrip(), over input positions where no
-    match can start. Zero-width assertions are treated as transparent, which can only
-    enlarge the set of possible first characters (a safe over-approximation).
+    Zero-width assertions are treated as transparent, which can only enlarge the
+    set of possible first characters (a safe over-approximation).
 
     Args:
       instructions: The optimized bytecode.
 
     Returns:
-      A string of characters that cannot begin a match, or None if the analysis does
-      not apply (the pattern can match the empty string, or starts with '.', or a
-      negated or complex set).
+      A tuple (first_dict, matches_non_ascii, can_match_empty):
+      - first_dict: Dict of ASCII/Latin-1 chars (0..255) that can start a match,
+        or None if every 0..255 char can start a match (or the pattern can match empty).
+      - matches_non_ascii: True if a non-ASCII char (>255) can start a match.
+      - can_match_empty: True if OP_MATCH is reachable without consuming input.
     """
     num_insts = len(instructions)
     seen = {}
     first = {}
+    all_ascii = False
+    matches_non_ascii = False
     stack = [0]
     for _ in range(2 * num_insts + 2):
         if not stack:
@@ -1515,7 +1518,7 @@ def compute_first_skip(instructions):
         if pc in seen:
             continue
         if pc >= num_insts:
-            return None
+            return None, True, True
         seen[pc] = True
         inst = instructions[pc]
         op = inst[0]
@@ -1528,33 +1531,43 @@ def compute_first_skip(instructions):
               op == OP_WORD_BOUNDARY or op == OP_NOT_WORD_BOUNDARY):
             stack += [pc + 1]
         elif op == OP_CHAR:
-            # CI atoms store c = char.lower() and match x.lower() == c; across
-            # CHR_LOOKUP (0..255), that holds only for x in {c, c.upper()}.
             c = inst[1]
-            first[c] = True
-            if inst[2]:
-                first[c.upper()] = True
+            if c in _ORD_LOOKUP:
+                first[c] = True
+                if inst[2]:
+                    first[c.upper()] = True
+            else:
+                matches_non_ascii = True
         elif op == OP_STRING:
             c = inst[1][0]
-            first[c] = True
-            if inst[2]:
-                first[c.upper()] = True
+            if c in _ORD_LOOKUP:
+                first[c] = True
+                if inst[2]:
+                    first[c.upper()] = True
+            else:
+                matches_non_ascii = True
         elif op == OP_SET:
             set_struct = inst[1]
             is_negated = inst[3]
             if not set_struct.is_simple:
-                return None
-            is_ci = inst[2]
-            if is_negated:
+                all_ascii = True
+                matches_non_ascii = True
+            elif is_negated:
+                matches_non_ascii = True
+                is_ci = inst[2]
                 lookup = set_struct.lookup
                 for c in _CHR_LOOKUP.elems():
                     if (c.lower() if is_ci else c) not in lookup:
                         first[c] = True
             else:
+                is_ci = inst[2]
                 for c in set_struct.all_chars.elems():
                     first[c] = True
                     if is_ci:
                         first[c.upper()] = True
+        elif op == OP_ANY or op == OP_ANY_NO_NL:
+            all_ascii = True
+            matches_non_ascii = True
         elif op == OP_GREEDY_LOOP or op == OP_UNGREEDY_LOOP:
             is_ci = inst[3]
             for c in inst[1].elems():
@@ -1563,18 +1576,214 @@ def compute_first_skip(instructions):
                     first[c.upper()] = True
             stack += [inst[2]]  # The loop may match zero characters.
         elif op == OP_NEG_GREEDY_LOOP:
+            matches_non_ascii = True
             stop_dict = {c: True for c in inst[1][0].elems()}
             for c in _CHR_LOOKUP.elems():
                 if c not in stop_dict:
                     first[c] = True
             stack += [inst[2]]  # The loop may match zero characters.
         else:
-            # OP_MATCH (empty match possible), OP_ANY, OP_ANY_NO_NL, ...
-            return None
+            # OP_MATCH: empty match possible.
+            return None, True, True
     if stack:
+        return None, True, True
+    if all_ascii:
+        return None, matches_non_ascii, False
+    return first, matches_non_ascii, False
+
+def compute_first_skip(instructions):
+    """Computes the characters that can never begin a match.
+
+    The VM uses this to skip, via a native lstrip(), over input positions where no
+    match can start. Zero-width assertions are treated as transparent, which can only
+    enlarge the set of possible first characters (a safe over-approximation).
+
+    Args:
+      instructions: The optimized bytecode.
+
+    Returns:
+      A string of characters that cannot begin a match, or None if the analysis does
+      not apply (the pattern can match the empty string, or can start with any ASCII char).
+    """
+    first, _matches_non_ascii, can_match_empty = compute_first_chars(instructions)
+    if can_match_empty or first == None:
         return None
     skip = "".join([c for c in _CHR_LOOKUP.elems() if c not in first])
     return skip if skip else None
+
+def _inst_has_ci(inst):
+    op = inst[0]
+    if op == OP_CHAR or op == OP_STRING or op == OP_SET:
+        return bool(inst[2])
+    if op == OP_GREEDY_LOOP or op == OP_UNGREEDY_LOOP:
+        return bool(inst[3])
+    return False
+
+def _branch_targets_valid(body, start, stop, end_pc):
+    """Returns True if every branch target in body stays within [start, stop) or hits end_pc."""
+    for inst in body:
+        op = inst[0]
+        if op == OP_JUMP or op == OP_GREEDY_LOOP or op == OP_UNGREEDY_LOOP or op == OP_NEG_GREEDY_LOOP:
+            t = inst[2]
+            if t != end_pc and (t < start or t >= stop):
+                return False
+        elif op == OP_SPLIT:
+            for t in (inst[2], inst[3]):
+                if t != end_pc and (t < start or t >= stop):
+                    return False
+            if inst[1] != None and (inst[1] < start or inst[1] >= stop):
+                return False
+    return True
+
+# buildifier: disable=list-append
+def build_alt_dispatch(instructions, group_count):
+    """Builds a first-character branch dispatch table for top-level alternations.
+
+    For patterns like `(?P<WS>[ \\t]+)|(?P<COMMENT>#[^\\n]*)|(?P<KEY>\\w+)`, each
+    branch is extracted as a standalone program with its own `opt` fast path and
+    indexed by the characters that can begin it.
+
+    Args:
+      instructions: The optimized bytecode.
+      group_count: Total number of capturing groups in the pattern.
+
+    Returns:
+      A struct(by_char, non_ascii) or None if the pattern is not a dispatchable
+      top-level alternation.
+    """
+    num_insts = len(instructions)
+    if num_insts < 6 or instructions[0][0] != OP_SAVE or instructions[0][2] != 0:
+        return None
+    if instructions[1][0] != OP_SPLIT or instructions[1][1] != None:
+        return None
+    end_pc = num_insts - 2
+    if instructions[end_pc][0] != OP_SAVE or instructions[end_pc][2] != 1 or instructions[end_pc + 1][0] != OP_MATCH:
+        return None
+
+    # Walk the top-level SPLIT right-spine to find branch start PCs.
+    branch_starts = []
+    cur = 1
+    for _ in range(num_insts):
+        inst = instructions[cur]
+        if inst[0] != OP_SPLIT or inst[1] != None:
+            return None
+        branch_starts += [inst[2]]
+        pc2 = inst[3]
+        if pc2 == cur + 1 and pc2 < end_pc and instructions[pc2][0] == OP_SPLIT and instructions[pc2][1] == None:
+            cur = pc2
+        else:
+            branch_starts += [pc2]
+            break
+
+    if len(branch_starts) < 2 or branch_starts[0] != cur + 1:
+        return None
+    for idx in range(len(branch_starts) - 1):
+        if branch_starts[idx] >= branch_starts[idx + 1]:
+            return None
+    if branch_starts[-1] >= end_pc:
+        return None
+
+    branches = []
+    any_has_opt = False
+    for idx in range(len(branch_starts)):
+        start = branch_starts[idx]
+        stop = branch_starts[idx + 1] if idx + 1 < len(branch_starts) else end_pc
+        if stop - start < 2:
+            return None
+        jump_inst = instructions[stop - 1]
+        if jump_inst[0] != OP_JUMP or jump_inst[2] != end_pc:
+            return None
+
+        body = instructions[start:stop - 1]
+        if not _branch_targets_valid(body, start, stop - 1, end_pc):
+            return None
+
+        # Unwrap a single outer capturing group `( ... )` / `(?P<name>...)` if the
+        # inner body has no other capturing groups, so optimize_matcher can fire.
+        wrap_gid = 0
+        inner_start = start
+        inner = body
+        if (len(body) >= 2 and
+            body[0][0] == OP_SAVE and body[0][2] >= 2 and body[0][2] % 2 == 0 and
+            body[-1][0] == OP_SAVE and body[-1][2] == body[0][2] + 1):
+            candidate_inner = body[1:-1]
+            has_inner_save = False
+            for inst in candidate_inner:
+                if inst[0] == OP_SAVE:
+                    has_inner_save = True
+                    break
+            if not has_inner_save and _branch_targets_valid(candidate_inner, start + 1, stop - 1, end_pc):
+                wrap_gid = body[0][2] // 2
+                inner_start = start + 1
+                inner = candidate_inner
+
+        # Build standalone branch bytecode: [SAVE 0] + remapped inner + [SAVE 1, MATCH].
+        branch_save1_pc = 1 + len(inner)
+        old_to_new = {end_pc: branch_save1_pc}
+        if wrap_gid > 0:
+            old_to_new[stop - 2] = branch_save1_pc
+        for k in range(len(inner)):
+            old_to_new[inner_start + k] = 1 + k
+
+        branch_bc = [(OP_SAVE, None, 0, None)]
+        b_has_ci = False
+        for inst in inner:
+            if _inst_has_ci(inst):
+                b_has_ci = True
+            branch_bc += [_remap_inst(inst, old_to_new)]
+        branch_bc += [(OP_SAVE, None, 1, None), (OP_MATCH, None, None, None)]
+
+        first, matches_non_ascii, can_match_empty = compute_first_chars(branch_bc)
+        if can_match_empty:
+            return None
+
+        b_opt = optimize_matcher(branch_bc)
+        if b_opt != None:
+            any_has_opt = True
+        branches += [struct(
+            bytecode = branch_bc,
+            opt = b_opt,
+            first = first,
+            matches_non_ascii = matches_non_ascii,
+            has_ci = b_has_ci,
+            visit_limit = compute_visit_limit(branch_bc),
+            wrap_gid = wrap_gid,
+            run_group_count = 0 if wrap_gid > 0 else group_count,
+        )]
+
+    # Build char -> [branches] dispatch map.
+    by_char = {}
+    non_ascii = []
+    for b in branches:
+        if b.matches_non_ascii:
+            non_ascii += [b]
+        if b.first == None:
+            for c in _CHR_LOOKUP.elems():
+                if c in by_char:
+                    by_char[c] += [b]
+                else:
+                    by_char[c] = [b]
+        else:
+            for c in b.first:
+                if c in by_char:
+                    by_char[c] += [b]
+                else:
+                    by_char[c] = [b]
+
+    # Only enable dispatch if it actually narrows candidate branches or unlocks opt fast paths.
+    n_branches = len(branches)
+    narrows = False
+    for cands in by_char.values():
+        if len(cands) < n_branches:
+            narrows = True
+            break
+    if not narrows and not any_has_opt:
+        return None
+
+    return struct(
+        by_char = by_char,
+        non_ascii = non_ascii,
+    )
 
 # buildifier: disable=list-append
 def compute_visit_limit(instructions):
