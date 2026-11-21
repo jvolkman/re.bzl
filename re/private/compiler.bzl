@@ -24,7 +24,6 @@ load(
     "OP_UNGREEDY_LOOP",
     "OP_WORD_BOUNDARY",
     "UNGREEDY",
-    "UNICODE",
     "VERBOSE",
     _CHR_LOOKUP = "CHR_LOOKUP",
     _ORD_LOOKUP = "ORD_LOOKUP",
@@ -74,39 +73,14 @@ _SIMPLE_ESCAPES = {
     "a": "\007",
 }
 
-def _get_predefined_class(char):
-    """Returns (set_definition, is_negated) for \\d, \\w, \\s, \\D, \\W, \\S."""
-    return _PREDEFINED_CLASSES.get(char)
-
-def _get_posix_class(name):
-    """Returns the character set for a POSIX class name."""
-    return _POSIX_CLASSES.get(name)
-
-# buildifier: disable=list-append
 # buildifier: disable=list-append
 def _new_set_builder(case_insensitive = False):
     """Returns a builder for creating a character set struct."""
     state = {
         "lookup": {},
-        "ranges": [],
         "negated_posix_list": [],
-        "all_chars_list": [],
         "ascii_list": [False] * 256,
     }
-
-    # RANGE_EXPANSION_LIMIT defines the maximum distance between start and end codes in a
-    # character range (e.g., [a-z]) that will be expanded into individual characters in
-    # the 'lookup' dictionary. Expanding ranges allows for O(1) membership checks during
-    # regex execution but increases memory usage. Ranges larger than this limit are
-    # stored as (start, end) tuples and checked via range comparison.
-    RANGE_EXPANSION_LIMIT = 512
-
-    # ALL_CHARS_STR_LIMIT defines the maximum number of unique characters that can be
-    # stored in the 'all_chars' string for a character set. If a set contains fewer
-    # characters than this limit (and has no large unexpanded ranges or negated POSIX
-    # classes), it is marked as 'is_simple'. Simple sets can be matched more efficiently
-    # by the VM using string-in-string checks (e.g., char in all_chars_str).
-    ALL_CHARS_STR_LIMIT = 2048
 
     def add_char(c):
         if len(c) > 1:
@@ -114,80 +88,39 @@ def _new_set_builder(case_insensitive = False):
         if case_insensitive:
             c = c.lower()
         state["lookup"][c] = True
-        state["all_chars_list"] += [c]
-        code = _ORD_LOOKUP[c]
-        if code < 256:
-            state["ascii_list"][code] = True
+        state["ascii_list"][_ORD_LOOKUP[c]] = True
 
     def add_range(start, end):
         start_code = _ORD_LOOKUP[start]
         end_code = _ORD_LOOKUP[end]
-        dist = end_code - start_code
-
-        # Update ASCII list (intersection with 0-255)
-        if start_code < 256:
-            limit = end_code
-            if limit > 255:
-                # Range goes beyond ASCII, only support up to 255 for now in ranges
-                limit = 255
-            for k in range(start_code, limit + 1):
-                c_iter = _CHR_LOOKUP[k]
-                if case_insensitive:
-                    c_iter = c_iter.lower()
-                code_final = _ORD_LOOKUP[c_iter]
-                if code_final < 256:
-                    state["ascii_list"][code_final] = True
-
-        if dist < RANGE_EXPANSION_LIMIT:
-            for code in range(start_code, end_code + 1):
-                c = _CHR_LOOKUP[code]
-                if case_insensitive:
-                    c = c.lower()
-                state["lookup"][c] = True
-                state["all_chars_list"] += [c]
-        else:
-            state["ranges"] += [(start, end)]
+        for code in range(start_code, end_code + 1):
+            c = _CHR_LOOKUP[code]
+            if case_insensitive:
+                c = c.lower()
+            state["lookup"][c] = True
+            state["ascii_list"][_ORD_LOOKUP[c]] = True
 
     def add_negated_posix(pset):
-        # pset is a list of atoms (chars or ranges)
+        # pset is a list of (start, end) ranges.
         state["negated_posix_list"] += [pset]
 
-        # Update ASCII list
         for k in range(256):
-            # Check if k is in pset
             in_pset = False
-            for item in pset:
-                # Check ranges
-                s, e = item
+            for s, e in pset:
                 if k >= _ORD_LOOKUP[s] and k <= _ORD_LOOKUP[e]:
                     in_pset = True
                     break
-
             if not in_pset:
                 state["ascii_list"][k] = True
 
     def build():
-        # Deduplicate for all_chars_str
-        all_chars_val = []
-        seen_str = {}
-        for c in state["all_chars_list"]:
-            if c not in seen_str:
-                seen_str[c] = True
-                if len(all_chars_val) < ALL_CHARS_STR_LIMIT:
-                    all_chars_val += [c]
-
         # The VM passes all_chars to lstrip()/rstrip(), which sort their argument on
         # every call; that is cheapest when it is already sorted.
-        all_chars_str = "".join(sorted(all_chars_val))
-
-        # Check if set is simple (fully represented by all_chars)
-        is_simple = (len(state["ranges"]) == 0 and
-                     len(state["negated_posix_list"]) == 0 and
-                     len(all_chars_val) < ALL_CHARS_STR_LIMIT)
+        all_chars_str = "".join(sorted(state["lookup"].keys()))
+        is_simple = len(state["negated_posix_list"]) == 0
 
         return struct(
             lookup = state["lookup"],
-            ranges = state["ranges"],
             negated_posix = state["negated_posix_list"],
             all_chars = all_chars_str,
             is_simple = is_simple,
@@ -304,7 +237,7 @@ def _parse_set_atom(pattern, i, pattern_len):
     if current == "\\" and i + 1 < pattern_len:
         i += 1
         next_c = pattern[i]
-        predef = _get_predefined_class(next_c)
+        predef = _PREDEFINED_CLASSES.get(next_c)
         if predef:
             pset, pneg = predef
             if not pneg:
@@ -338,7 +271,7 @@ def _parse_set_atom(pattern, i, pattern_len):
 
         if end_name != -1:
             name = pattern[start_name:end_name]
-            pset = _get_posix_class(name)
+            pset = _POSIX_CLASSES.get(name)
             if pset:
                 if is_negated:
                     return struct(char = None, atoms = None, negated_atoms = pset), end_name + 2
@@ -739,21 +672,7 @@ def _optimize_greedy_loops(instructions):
 
         new_insts += [inst]
 
-    # Remap PCs
-    for i in range(num_insts):
-        if i not in old_to_new:
-            # It was skipped.
-            pass
-
-    mapped_insts = []
-    for inst in new_insts:
-        mapped_insts += [inst]
-
-    final = []
-    for inst in mapped_insts:
-        final += [_remap_inst(inst, old_to_new)]
-
-    return final
+    return [_remap_inst(inst, old_to_new) for inst in new_insts]
 
 # buildifier: disable=list-append
 def _optimize_strings(instructions):
@@ -824,19 +743,14 @@ def _optimize_strings(instructions):
             if match_end > i + 1:
                 # We merged!
                 # Note: current_val is already lowercase if current_is_ci is true
-                new_insts.append((OP_STRING, current_val, current_is_ci, None))
+                new_insts += [(OP_STRING, current_val, current_is_ci, None)]
                 skip = match_end - i - 1
                 merged = True
 
         if not merged:
-            new_insts.append(inst)
+            new_insts += [inst]
 
-    # Remap jumps
-    final_insts = []
-    for inst in new_insts:
-        final_insts.append(_remap_inst(inst, old_to_new))
-
-    return final_insts
+    return [_remap_inst(inst, old_to_new) for inst in new_insts]
 
 # buildifier: disable=list-append
 def _optimize_jumps(instructions):
@@ -1117,19 +1031,18 @@ def _handle_quantifier(pattern, i, insts, atom_start = -1, ungreedy = False):
         return i
 
 # buildifier: disable=list-append
-def compile_regex(pattern, flags = 0, start_group_id = 0):
+def compile_regex(pattern, flags = 0):
     """Compiles regex to bytecode using Thompson NFA construction.
 
     Args:
       pattern: The regex pattern string.
       flags: Regex flags (e.g. re.I, re.M, re.VERBOSE).
-      start_group_id: The starting ID for capturing groups.
 
     Returns:
-      A tuple (instructions, named_groups_map, next_group_id, has_case_insensitive).
+      A tuple (instructions, named_groups_map, group_count, has_case_insensitive).
     """
     instructions = []
-    group_count = start_group_id
+    group_count = 0
     named_groups = {}  # Map name -> gid
     i = 0
     stack = []
@@ -1140,7 +1053,6 @@ def compile_regex(pattern, flags = 0, start_group_id = 0):
     dot_all = bool(flags & DOTALL)
     ungreedy = bool(flags & UNGREEDY)
     verbose = bool(flags & VERBOSE)
-    _unicode = bool(flags & UNICODE)  # @unused
     has_case_insensitive = False
 
     # Always save group 0 (full match) start
@@ -1264,9 +1176,9 @@ def compile_regex(pattern, flags = 0, start_group_id = 0):
 
         elif char == ".":
             if dot_all:
-                instructions += [(OP_ANY, None, None, None)]  # ANY (includes \n
+                instructions += [(OP_ANY, None, None, None)]
             else:
-                instructions += [(OP_ANY_NO_NL, None, None, None)]  # ANY_NO_NL (excludes \n
+                instructions += [(OP_ANY_NO_NL, None, None, None)]
             i = _handle_quantifier(pattern, i, instructions, ungreedy = ungreedy)
 
         elif char == "\\":
@@ -1313,7 +1225,7 @@ def compile_regex(pattern, flags = 0, start_group_id = 0):
                 next_c = pattern[i]
 
                 # Check for shortcuts \d, \w, \s, \b, \B
-                predef = _get_predefined_class(next_c)
+                predef = _PREDEFINED_CLASSES.get(next_c)
                 if predef:
                     # predef is (list, is_negated)
                     chars, is_negated = predef
@@ -1352,12 +1264,7 @@ def compile_regex(pattern, flags = 0, start_group_id = 0):
         else:
             if case_insensitive:
                 has_case_insensitive = True
-                if len(char) > 1:
-                    instructions += [(OP_STRING, char.lower(), True, None)]
-                else:
-                    instructions += [(OP_CHAR, char.lower(), True, None)]
-            elif len(char) > 1:
-                instructions += [(OP_STRING, char, False, None)]
+                instructions += [(OP_CHAR, char.lower(), True, None)]
             else:
                 instructions += [(OP_CHAR, char, False, None)]
             i = _handle_quantifier(pattern, i, instructions, ungreedy = ungreedy)
@@ -1591,11 +1498,9 @@ def optimize_matcher(instructions):
             break
 
     if suffix != "":
-        if all_cs:
-            pass  # Standard CS suffix
-        elif all_ci:
+        if all_ci:
             is_suffix_case_insensitive = True
-        else:
+        elif not all_cs:
             # Mixed suffix: see the mixed prefix case above.
             return None
 

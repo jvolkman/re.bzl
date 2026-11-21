@@ -86,18 +86,11 @@ _WORD_CHARS = {c: True for c in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTU
 def _char_in_set(set_struct, c):
     """Checks if character c is in the set_struct."""
     if c in ORD_LOOKUP:
-        ord_c = ORD_LOOKUP[c]
-        if ord_c < 256:
-            res_ascii = set_struct.ascii_bitmap[ord_c]
-            if res_ascii:
-                return True
+        if set_struct.ascii_bitmap[ORD_LOOKUP[c]]:
+            return True
 
     if c in set_struct.lookup:
         return True
-
-    for r_start, r_end in set_struct.ranges:
-        if c >= r_start and c <= r_end:
-            return True
 
     for pset in set_struct.negated_posix:
         # pset is a list of (start, end) tuples. Character must NOT be in this pset.
@@ -113,7 +106,7 @@ def _char_in_set(set_struct, c):
 
 # buildifier: disable=list-append
 # buildifier: disable=function-docstring-args
-def _get_epsilon_closure(instructions, input_str, input_len, start_pc, start_regs, current_idx, visited, visited_gen, visited_last, loop_cache, input_lower = None, word_mask = None):
+def _get_epsilon_closure(instructions, input_str, input_len, start_pc, start_regs, current_idx, visited, visited_gen, visited_last, loop_cache, input_lower = None):
     reachable = []
     num_inst = len(instructions)
 
@@ -184,24 +177,20 @@ def _get_epsilon_closure(instructions, input_str, input_len, start_pc, start_reg
                     regs[-1] = group_idx // 2
                 pc += 1
             elif itype == OP_WORD_BOUNDARY or itype == OP_NOT_WORD_BOUNDARY:
-                if word_mask != None:
-                    is_prev_word = (current_idx > 0 and word_mask[current_idx - 1])
-                    is_curr_word = (current_idx < input_len and word_mask[current_idx])
-                else:
-                    is_prev_word = (current_idx > 0 and input_str[current_idx - 1] in _WORD_CHARS)
-                    is_curr_word = (current_idx < input_len and input_str[current_idx] in _WORD_CHARS)
+                is_prev_word = (current_idx > 0 and input_str[current_idx - 1] in _WORD_CHARS)
+                is_curr_word = (current_idx < input_len and input_str[current_idx] in _WORD_CHARS)
                 match = (is_prev_word != is_curr_word) if itype == OP_WORD_BOUNDARY else (is_prev_word == is_curr_word)
                 if match:
                     pc += 1
                 else:
                     break
             elif itype == OP_ANCHOR_LINE_START:
-                if current_idx == 0 or (current_idx > 0 and input_str[current_idx - 1] == "\n"):
+                if current_idx == 0 or input_str[current_idx - 1] == "\n":
                     pc += 1
                 else:
                     break
             elif itype == OP_ANCHOR_LINE_END:
-                if current_idx == input_len or (current_idx < input_len and input_str[current_idx] == "\n"):
+                if current_idx == input_len or input_str[current_idx] == "\n":
                     pc += 1
                 else:
                     break
@@ -338,7 +327,7 @@ def _process_batch(instructions, batch, input_str, current_idx, input_len, input
             # We stop processing the current batch AND return the match.
             break
 
-        if char == None and itype != OP_MATCH:
+        if char == None:
             continue
 
         match_found = False
@@ -396,7 +385,7 @@ def _process_batch(instructions, batch, input_str, current_idx, input_len, input
     return next_threads_list, best_match_regs, matched_priority_index
 
 # buildifier: disable=list-append
-def execute(instructions, input_str, num_regs, start_index = 0, end_index = None, initial_regs = None, anchored = False, has_case_insensitive = False, input_lower = None, word_mask = None, require_end = False, first_skip = None, must_advance = False, visit_limit = 2):
+def execute(instructions, input_str, num_regs, start_index = 0, end_index = None, initial_regs = None, anchored = False, has_case_insensitive = False, input_lower = None, require_end = False, first_skip = None, must_advance = False, visit_limit = 2):
     """Executes the bytecode on the input string.
 
     Args:
@@ -409,7 +398,6 @@ def execute(instructions, input_str, num_regs, start_index = 0, end_index = None
       anchored: Whether the match is anchored.
       has_case_insensitive: Whether the match is case insensitive.
       input_lower: Pre-calculated lowercase input string.
-      word_mask: Pre-calculated word character mask.
       require_end: If True, only matches that end at end_index count (fullmatch).
       first_skip: Optional string of characters that can never begin a match.
       must_advance: If True, an empty match at start_index does not count, but a
@@ -424,8 +412,7 @@ def execute(instructions, input_str, num_regs, start_index = 0, end_index = None
     if initial_regs == None:
         initial_regs = [-1] * (num_regs + 1)
 
-    input_original_len = len(input_str)
-    input_len = input_original_len if end_index == None else end_index
+    input_len = len(input_str) if end_index == None else end_index
     lower_on_demand = False
     if input_lower == None and has_case_insensitive:
         if anchored:
@@ -474,7 +461,7 @@ def execute(instructions, input_str, num_regs, start_index = 0, end_index = None
                 expanded_batch += [(s_pc, s_regs, s_skip)]
                 continue
 
-            closure = _get_epsilon_closure(instructions, input_str, input_len, s_pc, s_regs, char_idx, visited, visited_gen, visited_last, loop_cache, input_lower = input_lower, word_mask = word_mask)
+            closure = _get_epsilon_closure(instructions, input_str, input_len, s_pc, s_regs, char_idx, visited, visited_gen, visited_last, loop_cache, input_lower = input_lower)
             for c_pc, c_regs in closure:
                 expanded_batch += [(c_pc, c_regs, char_idx)]
 
@@ -482,7 +469,7 @@ def execute(instructions, input_str, num_regs, start_index = 0, end_index = None
         # later start position can never win, so stop seeding new start positions.
         if not anchored and best_match_regs == None:
             if visited[0] <= visited_last:
-                closure0 = _get_epsilon_closure(instructions, input_str, input_len, 0, initial_regs[:], char_idx, visited, visited_gen, visited_last, loop_cache, input_lower = input_lower, word_mask = word_mask)
+                closure0 = _get_epsilon_closure(instructions, input_str, input_len, 0, initial_regs[:], char_idx, visited, visited_gen, visited_last, loop_cache, input_lower = input_lower)
                 for c_pc, c_regs in closure0:
                     expanded_batch += [(c_pc, c_regs, char_idx)]
 
@@ -682,22 +669,7 @@ def expand_template(template, match_str, groups):
 
     return "".join(res)
 
-def expand_replacement(repl, match_str, groups, named_groups = {}):
-    """Expands backreferences in replacement string.
-
-    Args:
-      repl: Replacement string.
-      match_str: The full matched string.
-      groups: Tuple of captured groups.
-      named_groups: Map of group names to IDs.
-
-    Returns:
-      The expanded replacement string.
-    """
-    template = parse_replacement_template(repl, named_groups)
-    return expand_template(template, match_str, groups)
-
-def search_regs(bytecode, text, group_count, start_index = 0, end_index = None, has_case_insensitive = False, opt = None, input_lower = None, word_mask = None, first_skip = None, must_advance = False, visit_limit = 2):
+def search_regs(bytecode, text, group_count, start_index = 0, end_index = None, has_case_insensitive = False, opt = None, input_lower = None, first_skip = None, must_advance = False, visit_limit = 2):
     """Executes a search returning registers.
 
     The returned `regs` is a flat list of integers representing [start, end] pairs for each group.
@@ -716,7 +688,6 @@ def search_regs(bytecode, text, group_count, start_index = 0, end_index = None, 
       has_case_insensitive: CI flag.
       opt: Optimization data.
       input_lower: Pre-calculated lowercase input string.
-      word_mask: Pre-calculated word character mask.
       first_skip: Characters that can never begin a match (see compute_first_skip).
       must_advance: If True, reject an empty match at start_index (the previous
         findall/sub/split match was empty and ended there).
@@ -736,7 +707,7 @@ def search_regs(bytecode, text, group_count, start_index = 0, end_index = None, 
         # only a non-empty match at index 0 remains; avoid scanning the whole input.
         if start_index > 0:
             return None
-        return execute(bytecode, text, (group_count + 1) * 2, end_index = end_index, anchored = True, has_case_insensitive = has_case_insensitive, input_lower = input_lower, word_mask = word_mask, must_advance = True, visit_limit = visit_limit)
+        return execute(bytecode, text, (group_count + 1) * 2, end_index = end_index, anchored = True, has_case_insensitive = has_case_insensitive, input_lower = input_lower, must_advance = True, visit_limit = visit_limit)
 
     # Fast path optimization. The fast paths below do not implement must_advance. It
     # is only set after an empty match, which the patterns they handle can produce
@@ -749,7 +720,7 @@ def search_regs(bytecode, text, group_count, start_index = 0, end_index = None, 
                 return None
 
             # If anchored at start, search is just match
-            return match_regs(bytecode, text, group_count, start_index = start_index, end_index = end_index, has_case_insensitive = has_case_insensitive, opt = opt, input_lower = input_lower, word_mask = word_mask, visit_limit = visit_limit)
+            return match_regs(bytecode, text, group_count, start_index = start_index, end_index = end_index, has_case_insensitive = has_case_insensitive, opt = opt, input_lower = input_lower, visit_limit = visit_limit)
 
         # Only `...prefix [set]* suffix$` and `...prefix [set]+ suffix$` are handled here.
         # (`(?i:[ab])[ab]*` has equal sets but isn't `[ab]+`.)
@@ -765,8 +736,6 @@ def search_regs(bytecode, text, group_count, start_index = 0, end_index = None, 
                 if opt.greedy_set_chars != None:
                     match_len = _windowed_rstrip(text, opt.greedy_set_chars, before_suffix_idx, start_index + len(opt.prefix))
                     greedy_start = before_suffix_idx - match_len
-
-                # else: no greedy_set_chars
 
                 match_start = greedy_start
 
@@ -789,20 +758,16 @@ def search_regs(bytecode, text, group_count, start_index = 0, end_index = None, 
         # General case search optimization: skipping to prefix or suffix
         if opt.prefix != "":
             start_off = start_index
-            search_text = text
-            search_prefix = opt.prefix
-            if opt.case_insensitive_prefix:
-                search_text = input_lower
-                search_prefix = opt.prefix.lower()
+            search_text = input_lower if opt.case_insensitive_prefix else text
 
             # We can use find() to skip to the first potential match
             for _ in range(len(text)):  # Loop for find() calls
-                found_idx = search_text.find(search_prefix, start_off, effective_len)
+                found_idx = search_text.find(opt.prefix, start_off, effective_len)
                 if found_idx == -1:
                     break
 
                 # For unanchored search with prefix literal, simple skip:
-                regs = match_regs(bytecode, text, group_count, start_index = found_idx, end_index = end_index, has_case_insensitive = has_case_insensitive, opt = opt, input_lower = input_lower, word_mask = word_mask, visit_limit = visit_limit)
+                regs = match_regs(bytecode, text, group_count, start_index = found_idx, end_index = end_index, has_case_insensitive = has_case_insensitive, opt = opt, input_lower = input_lower, visit_limit = visit_limit)
                 if regs:
                     return regs
 
@@ -816,19 +781,11 @@ def search_regs(bytecode, text, group_count, start_index = 0, end_index = None, 
             # Backing up from the suffix over the loop finds the leftmost start, but in
             # `[set1][set2]*suffix` the set1 character can be inside the loop's run
             # (`[ab][bc]*c` matches "bc" in "ccbc"), so that's left to the NFA.
-
-            # Prepare search parameters
-            search_text = text
-            search_suffix = opt.suffix
-
-            if opt.is_suffix_case_insensitive:
-                # To handle CI search properly, we use pre-computed input_lower
-                search_text = input_lower
-                search_suffix = opt.suffix.lower()
+            search_text = input_lower if opt.is_suffix_case_insensitive else text
 
             start_off = start_index
             for _ in range(len(text)):
-                found_idx = search_text.find(search_suffix, start_off, effective_len)
+                found_idx = search_text.find(opt.suffix, start_off, effective_len)
                 if found_idx == -1:
                     break
 
@@ -866,7 +823,7 @@ def search_regs(bytecode, text, group_count, start_index = 0, end_index = None, 
                     regs[1] = found_idx + len(opt.suffix)
                     return regs
 
-                regs = match_regs(bytecode, text, group_count, start_index = search_start, end_index = end_index, has_case_insensitive = has_case_insensitive, opt = opt, input_lower = input_lower, word_mask = word_mask, visit_limit = visit_limit)
+                regs = match_regs(bytecode, text, group_count, start_index = search_start, end_index = end_index, has_case_insensitive = has_case_insensitive, opt = opt, input_lower = input_lower, visit_limit = visit_limit)
                 if regs:
                     return regs
 
@@ -878,9 +835,9 @@ def search_regs(bytecode, text, group_count, start_index = 0, end_index = None, 
             return None
 
     num_regs = (group_count + 1) * 2
-    return execute(bytecode, text, num_regs, start_index = start_index, end_index = end_index, anchored = False, has_case_insensitive = has_case_insensitive, input_lower = input_lower, word_mask = word_mask, first_skip = first_skip, must_advance = must_advance, visit_limit = visit_limit)
+    return execute(bytecode, text, num_regs, start_index = start_index, end_index = end_index, anchored = False, has_case_insensitive = has_case_insensitive, input_lower = input_lower, first_skip = first_skip, must_advance = must_advance, visit_limit = visit_limit)
 
-def match_regs(bytecode, text, group_count, start_index = 0, end_index = None, has_case_insensitive = False, opt = None, input_lower = None, word_mask = None, first_skip = None, visit_limit = 2):
+def match_regs(bytecode, text, group_count, start_index = 0, end_index = None, has_case_insensitive = False, opt = None, input_lower = None, first_skip = None, visit_limit = 2):
     """Executes a match returning registers.
 
     Args:
@@ -892,7 +849,6 @@ def match_regs(bytecode, text, group_count, start_index = 0, end_index = None, h
       has_case_insensitive: CI flag.
       opt: Optimization data.
       input_lower: Pre-calculated lowercase input string.
-      word_mask: Pre-calculated word character mask.
       first_skip: Characters that can never begin a match (see compute_first_skip).
       visit_limit: How many times the VM may reach a pc at one position (see
         compute_visit_limit).
@@ -913,13 +869,9 @@ def match_regs(bytecode, text, group_count, start_index = 0, end_index = None, h
     # applies at index 0 for start-anchored patterns).
     if opt and (start_index == 0 or not opt.is_anchored_start):
         # Simple anchored prefix match
-        check_text = text
-        check_prefix = opt.prefix
-        if opt.case_insensitive_prefix:
-            check_text = input_lower
-            check_prefix = opt.prefix.lower()
+        check_text = input_lower if opt.case_insensitive_prefix else text
 
-        if check_text.startswith(check_prefix, start_index) and start_index + len(opt.prefix) <= effective_len:
+        if check_text.startswith(opt.prefix, start_index) and start_index + len(opt.prefix) <= effective_len:
             match_end = start_index + len(opt.prefix)
             fast_path_ok = True
 
@@ -934,15 +886,11 @@ def match_regs(bytecode, text, group_count, start_index = 0, end_index = None, h
             # 2. Match greedy_set_chars and suffix. Each part is compared case-insensitively
             # only if that part of the pattern is (see fullmatch_regs).
             if fast_path_ok:
-                suffix_text = text
-                check_suffix = opt.suffix
-                if opt.is_suffix_case_insensitive:
-                    suffix_text = input_lower
-                    check_suffix = opt.suffix.lower()
+                suffix_text = input_lower if opt.is_suffix_case_insensitive else text
                 loop_text = input_lower if opt.is_greedy_case_insensitive else text
                 if opt.is_anchored_end:
                     # Must match suffix at the end and greedy_set in between
-                    if effective_len >= len(opt.suffix) and suffix_text.startswith(check_suffix, effective_len - len(opt.suffix)):
+                    if effective_len >= len(opt.suffix) and suffix_text.startswith(opt.suffix, effective_len - len(opt.suffix)):
                         middle_start = match_end
                         middle_end = effective_len - len(opt.suffix)
                         if middle_end >= middle_start:
@@ -966,7 +914,7 @@ def match_regs(bytecode, text, group_count, start_index = 0, end_index = None, h
                     # Only valid for lazy loops, or greedy loops that cannot consume the suffix.
                     if opt.greedy_set_chars != None and not opt.is_ungreedy_loop and not opt.is_suffix_disjoint:
                         fast_path_ok = False
-                    found_idx = suffix_text.find(check_suffix, match_end, effective_len) if fast_path_ok else -1
+                    found_idx = suffix_text.find(opt.suffix, match_end, effective_len) if fast_path_ok else -1
                     if found_idx != -1:
                         # Check if everything between match_end and found_idx is in greedy_set
                         if opt.greedy_set_chars != None:
@@ -983,16 +931,10 @@ def match_regs(bytecode, text, group_count, start_index = 0, end_index = None, h
                                 fast_path_ok = False
                     else:
                         fast_path_ok = False
-                else:
-                    # No suffix, not anchored at end
-                    if opt.greedy_set_chars != None and not opt.is_ungreedy_loop:
-                        # Greedy match the rest. (A lazy loop matches zero iterations here.)
-                        strip_text = input_lower if opt.is_greedy_case_insensitive else text
-                        match_len = _windowed_lstrip(strip_text, opt.greedy_set_chars, match_end, effective_len)
-                        match_end += match_len
-                    else:
-                        # No greedy set, just prefix(+set)
-                        pass
+                elif opt.greedy_set_chars != None and not opt.is_ungreedy_loop:
+                    # No suffix, not anchored at end: greedy match the rest.
+                    # (A lazy loop matches zero iterations here.)
+                    match_end += _windowed_lstrip(loop_text, opt.greedy_set_chars, match_end, effective_len)
 
             if fast_path_ok:
                 regs = [-1] * ((group_count + 1) * 2 + 1)
@@ -1001,9 +943,9 @@ def match_regs(bytecode, text, group_count, start_index = 0, end_index = None, h
                 return regs
 
     num_regs = (group_count + 1) * 2
-    return execute(bytecode, text, num_regs, start_index = start_index, end_index = end_index, anchored = True, has_case_insensitive = has_case_insensitive, input_lower = input_lower, word_mask = word_mask, visit_limit = visit_limit)
+    return execute(bytecode, text, num_regs, start_index = start_index, end_index = end_index, anchored = True, has_case_insensitive = has_case_insensitive, input_lower = input_lower, visit_limit = visit_limit)
 
-def fullmatch_regs(bytecode, text, group_count, start_index = 0, end_index = None, has_case_insensitive = False, opt = None, input_lower = None, word_mask = None, first_skip = None, visit_limit = 2):
+def fullmatch_regs(bytecode, text, group_count, start_index = 0, end_index = None, has_case_insensitive = False, opt = None, input_lower = None, first_skip = None, visit_limit = 2):
     """Executes a full match returning registers.
 
     Args:
@@ -1015,7 +957,6 @@ def fullmatch_regs(bytecode, text, group_count, start_index = 0, end_index = Non
       has_case_insensitive: CI flag.
       opt: Optimization data.
       input_lower: Pre-calculated lowercase input string.
-      word_mask: Pre-calculated word character mask.
       first_skip: Characters that can never begin a match (see compute_first_skip).
       visit_limit: How many times the VM may reach a pc at one position (see
         compute_visit_limit).
@@ -1039,24 +980,13 @@ def fullmatch_regs(bytecode, text, group_count, start_index = 0, end_index = Non
         # So it behaves like it has an implicit $ anchor.
         # Each part is compared case-insensitively only if that part of the pattern is
         # (scoped flags such as `(?i:x)[a-z]+` can mix both).
-        prefix_text = text
-        check_prefix = opt.prefix
-        if opt.case_insensitive_prefix:
-            prefix_text = input_lower
-            check_prefix = opt.prefix.lower()
-        suffix_text = text
-        check_suffix = opt.suffix
-        if opt.is_suffix_case_insensitive:
-            suffix_text = input_lower
-            check_suffix = opt.suffix.lower()
+        prefix_text = input_lower if opt.case_insensitive_prefix else text
+        suffix_text = input_lower if opt.is_suffix_case_insensitive else text
         loop_text = input_lower if opt.is_greedy_case_insensitive else text
 
-        if effective_len >= len(opt.suffix) and prefix_text.startswith(check_prefix, start_index) and suffix_text.startswith(check_suffix, effective_len - len(opt.suffix)):
+        if effective_len >= len(opt.suffix) and prefix_text.startswith(opt.prefix, start_index) and suffix_text.startswith(opt.suffix, effective_len - len(opt.suffix)):
             match_end = start_index + len(opt.prefix)
-            if match_end > effective_len - len(opt.suffix):
-                fast_path_ok = False
-            else:
-                fast_path_ok = True
+            fast_path_ok = match_end <= effective_len - len(opt.suffix)
 
             if opt.prefix_set_chars != None:
                 set_text = input_lower if opt.is_prefix_set_case_insensitive else text
@@ -1089,10 +1019,7 @@ def fullmatch_regs(bytecode, text, group_count, start_index = 0, end_index = Non
                 return regs
 
     num_regs = (group_count + 1) * 2
-    regs = execute(bytecode, text, num_regs, start_index = start_index, end_index = end_index, anchored = True, has_case_insensitive = has_case_insensitive, input_lower = input_lower, word_mask = word_mask, require_end = True, visit_limit = visit_limit)
-    if regs and regs[1] != effective_len:
-        return None
-    return regs
+    return execute(bytecode, text, num_regs, start_index = start_index, end_index = end_index, anchored = True, has_case_insensitive = has_case_insensitive, input_lower = input_lower, require_end = True, visit_limit = visit_limit)
 
 # buildifier: disable=list-append
 def MatchObject(text, regs, compiled, pos, endpos):
