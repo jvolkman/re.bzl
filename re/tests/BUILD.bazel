@@ -2,6 +2,7 @@ load("@bazel_skylib//:bzl_library.bzl", "bzl_library")
 load("//re/tests:test_anchors.bzl", "anchors_test")
 load("//re/tests:test_api.bzl", "api_test")
 load("//re/tests:test_core.bzl", "core_test")
+load("//re/tests:test_equivalence.bzl", "equivalence_test")
 load("//re/tests:test_escape.bzl", "escape_test")
 load("//re/tests:test_flags.bzl", "flags_test")
 load("//re/tests:test_groups.bzl", "groups_test")
@@ -30,6 +31,8 @@ api_test(name = "api_test")
 
 core_test(name = "core_test")
 
+equivalence_test(name = "equivalence_test")
+
 escape_test(name = "escape_test")
 
 groups_test(name = "groups_test")
@@ -56,6 +59,7 @@ test_suite(
         ":anchors_test",
         ":api_test",
         ":core_test",
+        ":equivalence_test",
         ":escape_test",
         ":flags_test",
         ":groups_test",

@@ -1045,12 +1045,13 @@ def _handle_quantifier(pattern, i, insts, atom_start = -1, ungreedy = False):
         return i
 
 # buildifier: disable=list-append
-def compile_regex(pattern, flags = 0):
+def compile_regex(pattern, flags = 0, optimize = True):
     """Compiles regex to bytecode using Thompson NFA construction.
 
     Args:
       pattern: The regex pattern string.
       flags: Regex flags (e.g. re.I, re.M, re.VERBOSE).
+      optimize: Whether to run peephole bytecode optimizations (default True).
 
     Returns:
       A tuple (instructions, named_groups_map, group_count, has_case_insensitive).
@@ -1282,7 +1283,8 @@ def compile_regex(pattern, flags = 0):
     instructions += [(OP_SAVE, None, 1, None)]
     instructions += [(OP_MATCH, None, None, None)]
 
-    instructions = _optimize_bytecode(instructions)
+    if optimize:
+        instructions = _optimize_bytecode(instructions)
 
     return instructions, named_groups, group_count, has_case_insensitive
 
