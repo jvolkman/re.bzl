@@ -38,17 +38,45 @@ def _windowed_lstrip(s, chars, start, end = None, lower = False):
     """
     if end == None:
         end = len(s)
+    if start >= end:
+        return 0
     pos = start
     size = _MIN_WINDOW_SIZE
-    for _ in range(end // _MIN_WINDOW_SIZE + 2):
+    single = len(chars) == 1 and not lower
+    if single:
+        if s[pos] != chars:
+            return 0
+        run = chars * size
+        for _ in range((end - start) // _MIN_WINDOW_SIZE + 2):
+            if pos >= end:
+                break
+            rem = end - pos
+            if rem < size:
+                if s.startswith(run[:rem], pos):
+                    return end - start
+                window = s[pos:end]
+                stripped = window.lstrip(chars)
+                return pos - start + len(window) - len(stripped)
+            if s.startswith(run, pos):
+                pos += size
+                if size < _MAX_WINDOW_SIZE:
+                    size *= 4
+                    run = run + run + run + run
+                continue
+            window = s[pos:pos + size]
+            stripped = window.lstrip(chars)
+            return pos - start + len(window) - len(stripped)
+        return pos - start
+
+    for _ in range((end - start) // _MIN_WINDOW_SIZE + 2):
+        if pos >= end:
+            break
         stop = pos + size
         if stop > end:
             stop = end
         window = s[pos:stop]
         if lower:
             window = window.lower()
-        if not window:
-            break
         stripped = window.lstrip(chars)
         pos += len(window) - len(stripped)
         if stripped:
@@ -63,13 +91,39 @@ def _windowed_rstrip(s, chars, end, min_start = 0):
         return 0
     pos = end
     size = _MIN_WINDOW_SIZE
+    if len(chars) == 1:
+        if s[pos - 1] != chars:
+            return 0
+        run = chars * size
+        for _ in range((end - min_start) // _MIN_WINDOW_SIZE + 2):
+            if pos <= min_start:
+                break
+            rem = pos - min_start
+            if rem < size:
+                if s.startswith(run[:rem], min_start):
+                    return end - min_start
+                window = s[min_start:pos]
+                stripped = window.rstrip(chars)
+                return end - pos + len(window) - len(stripped)
+            start = pos - size
+            if s.startswith(run, start):
+                pos = start
+                if size < _MAX_WINDOW_SIZE:
+                    size *= 4
+                    run = run + run + run + run
+                continue
+            window = s[start:pos]
+            stripped = window.rstrip(chars)
+            return end - pos + len(window) - len(stripped)
+        return end - pos
+
     for _ in range((end - min_start) // _MIN_WINDOW_SIZE + 2):
+        if pos <= min_start:
+            break
         start = pos - size
         if start < min_start:
             start = min_start
         window = s[start:pos]
-        if not window:
-            break
         stripped = window.rstrip(chars)
         pos -= len(window) - len(stripped)
         if stripped:
